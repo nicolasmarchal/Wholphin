@@ -5,7 +5,16 @@ import androidx.work.WorkManager
 import com.github.damontecres.wholphin.BuildConfig
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.ServerRepository
+import com.github.damontecres.wholphin.services.ReleaseCompanionFeature
 import com.github.damontecres.wholphin.services.SeerrApi
+import com.github.damontecres.wholphin.services.release.CompanionOriginPolicy
+import com.github.damontecres.wholphin.services.release.DefaultReleaseCompanionApi
+import com.github.damontecres.wholphin.services.release.DefaultReleaseCompanionRepository
+import com.github.damontecres.wholphin.services.release.JellyfinCredential
+import com.github.damontecres.wholphin.services.release.JellyfinCredentialProvider
+import com.github.damontecres.wholphin.services.release.OkHttpReleaseCompanionTransport
+import com.github.damontecres.wholphin.services.release.ReleaseCompanionException
+import com.github.damontecres.wholphin.services.release.SensitiveValue
 import com.github.damontecres.wholphin.util.CoroutineContextApiClientFactory
 import com.github.damontecres.wholphin.util.WholphinDispatchers
 import dagger.Module
@@ -40,6 +49,14 @@ annotation class AuthOkHttpClient
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class StandardOkHttpClient
+
+/**
+ * A dedicated client for the release companion. It never contains Jellyfin authentication
+ * interceptors; credentials are attached only to the origin-locked session exchange request.
+ */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class ReleaseCompanionOkHttpClient
 
 /**
  * A [CoroutineScope] with [WholphinDispatchers.IO]
@@ -125,6 +142,58 @@ object AppModule {
                 }
             it.proceed(newRequest ?: request)
         }.build()
+
+    @ReleaseCompanionOkHttpClient
+    @Provides
+    @Singleton
+    fun releaseCompanionOkHttpClient(): OkHttpClient = OkHttpClient.Builder().build()
+
+    @Provides
+    @Singleton
+    fun releaseCompanionFeature(
+        serverRepository: ServerRepository,
+        @ReleaseCompanionOkHttpClient okHttpClient: OkHttpClient,
+    ): ReleaseCompanionFeature {
+        val baseUrl = BuildConfig.COMPANION_BASE_URL.trim()
+        if (!BuildConfig.COMPANION_ENABLED || baseUrl.isEmpty()) {
+            return ReleaseCompanionFeature.disabled()
+        }
+
+        val repository =
+            try {
+                val transport =
+                    OkHttpReleaseCompanionTransport(
+                        baseUrl = baseUrl,
+                        baseClient = okHttpClient,
+                        originPolicy =
+                            CompanionOriginPolicy(
+                                allowCleartext = BuildConfig.COMPANION_ALLOW_CLEARTEXT,
+                            ),
+                    )
+                val credentialProvider =
+                    JellyfinCredentialProvider {
+                        val current = serverRepository.current.value
+                        val token = current?.user?.accessToken?.takeIf(String::isNotBlank)
+                        if (current == null || token == null) {
+                            null
+                        } else {
+                            JellyfinCredential(
+                                identityKey = "${current.server.id}:${current.user.id}",
+                                accessToken = SensitiveValue.of(token),
+                            )
+                        }
+                    }
+                DefaultReleaseCompanionRepository(
+                    api = DefaultReleaseCompanionApi(transport),
+                    jellyfinCredentialProvider = credentialProvider,
+                )
+            } catch (_: ReleaseCompanionException.InvalidConfiguration) {
+                // Keep startup and the classic Seerr fallback usable when local build settings are
+                // incomplete. The URL itself is intentionally not logged.
+                return ReleaseCompanionFeature.disabled()
+            }
+        return ReleaseCompanionFeature.enabled(repository)
+    }
 
     @Provides
     @Singleton

@@ -35,6 +35,21 @@ val mpvModuleExists =
     providers.provider { project.file("libs/wholphin-mpv-release.aar").exists() }
 val extensionsRepoActive =
     providers.provider { project.hasProperty("WholphinExtensionsUsername") }
+val companionBaseUrl =
+    providers
+        .gradleProperty("wholphin.companion.baseUrl")
+        .orElse(providers.environmentVariable("WHOLPHIN_COMPANION_URL"))
+        .orElse("")
+val companionEnabled =
+    providers
+        .gradleProperty("wholphin.companion.enabled")
+        .orElse(providers.environmentVariable("WHOLPHIN_COMPANION_ENABLED"))
+        .orElse("true")
+val companionAllowCleartext =
+    providers
+        .gradleProperty("wholphin.companion.allowCleartext")
+        .orElse(providers.environmentVariable("WHOLPHIN_COMPANION_ALLOW_CLEARTEXT"))
+        .orElse("false")
 
 // See https://issuetracker.google.com/issues/402800800
 val isBuildingBundle =
@@ -66,6 +81,16 @@ kotlin {
 }
 
 private fun Provider<String>.getInt() = get().toInt()
+
+private fun Provider<String>.getBoolean(settingName: String): Boolean =
+    when (val value = get().trim().lowercase()) {
+        "true" -> true
+        "false" -> false
+        else -> error("$settingName must be either true or false, but was '$value'")
+    }
+
+private fun String.asBuildConfigString(): String =
+    "\"${replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")}\""
 
 configure<ApplicationExtension> {
     namespace = "com.github.damontecres.wholphin"
@@ -136,6 +161,9 @@ configure<ApplicationExtension> {
         val featureLeanback = "leanback"
         val featureUpdate = "UPDATING_ENABLED"
         val featureDiscover = "DISCOVER_ENABLED"
+        val featureCompanion = "COMPANION_ENABLED"
+        val companionUrl = "COMPANION_BASE_URL"
+        val companionCleartext = "COMPANION_ALLOW_CLEARTEXT"
 
         fun ProductFlavor.setFeatureFlag(
             name: String,
@@ -143,24 +171,49 @@ configure<ApplicationExtension> {
         ) {
             this.buildConfigField("boolean", name, "Boolean.parseBoolean(\"${enabled}\")")
         }
+
+        fun ProductFlavor.disableCompanion() {
+            setFeatureFlag(featureCompanion, false)
+            setFeatureFlag(companionCleartext, false)
+            buildConfigField("String", companionUrl, "".asBuildConfigString())
+        }
         create("default") {
             dimension = "version"
             isDefault = true
             manifestPlaceholders += mapOf(featureLeanback to false)
             setFeatureFlag(featureUpdate, true)
             setFeatureFlag(featureDiscover, true)
+            disableCompanion()
         }
         create("appstore") {
             dimension = "version"
             manifestPlaceholders += mapOf(featureLeanback to true)
             setFeatureFlag(featureUpdate, false)
             setFeatureFlag(featureDiscover, true)
+            disableCompanion()
         }
         create("firetv") {
             dimension = "version"
             manifestPlaceholders += mapOf(featureLeanback to true)
             setFeatureFlag(featureUpdate, false)
             setFeatureFlag(featureDiscover, false)
+            disableCompanion()
+        }
+        create("companion") {
+            dimension = "version"
+            applicationIdSuffix = ".companion"
+            manifestPlaceholders += mapOf(featureLeanback to true)
+            setFeatureFlag(featureUpdate, false)
+            setFeatureFlag(featureDiscover, true)
+            setFeatureFlag(
+                featureCompanion,
+                companionEnabled.getBoolean("wholphin.companion.enabled"),
+            )
+            setFeatureFlag(
+                companionCleartext,
+                companionAllowCleartext.getBoolean("wholphin.companion.allowCleartext"),
+            )
+            buildConfigField("String", companionUrl, companionBaseUrl.get().asBuildConfigString())
         }
     }
     compileOptions {

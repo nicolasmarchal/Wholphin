@@ -44,6 +44,26 @@ You can also build the extensions locally from https://github.com/damontecres/wh
 
 Finally, if no `wholphin-mpv` implementation is found, `wholphin-mpv-stub` will be used. This allows the app to compile, but any runtime usage of MPV will throw an exception.
 
+#### Release companion flavor
+
+The optional release-selection integration is isolated in the `companion` product flavor. Its application id is suffixed with `.companion`, so it can be installed next to an upstream Wholphin build. Upstream auto-update checks are disabled for this flavor; the existing Seerr discovery and automatic request flow remains compiled in as a fallback.
+
+The companion URL is deployment configuration, not an application secret. Do not add Radarr, Sonarr, Prowlarr, qBittorrent, Seerr administrator, tracker, or companion bearer credentials to Gradle properties or the APK.
+
+Configure a local build with Gradle properties:
+
+```shell
+./gradlew :app:assembleCompanionDebug \
+  -Pwholphin.companion.baseUrl=http://192.168.1.10:8099 \
+  -Pwholphin.companion.allowCleartext=true
+```
+
+The equivalent environment variables are `WHOLPHIN_COMPANION_URL`, `WHOLPHIN_COMPANION_ALLOW_CLEARTEXT`, and `WHOLPHIN_COMPANION_ENABLED`. Boolean values must be `true` or `false`.
+
+Cleartext HTTP is rejected unless it is explicitly enabled for a trusted LAN or VPN deployment. Prefer HTTPS once the test setup is validated. If the feature is disabled, the URL is missing, or the origin is invalid, the app starts normally and only the classic flow is exposed.
+
+The Android client exchanges the active Jellyfin token for an in-memory, short-lived companion session. Its dedicated HTTP client has no Jellyfin authorization interceptor, does not follow redirects, and never persists either token.
+
 ## Code organization
 
 Code is split into several packages:

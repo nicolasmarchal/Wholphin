@@ -27,6 +27,7 @@ import org.jellyfin.sdk.api.client.extensions.sessionApi
 import org.jellyfin.sdk.api.sockets.subscribe
 import org.jellyfin.sdk.model.api.GeneralCommandMessage
 import org.jellyfin.sdk.model.api.GeneralCommandType
+import org.jellyfin.sdk.model.api.LibraryChangedMessage
 import org.jellyfin.sdk.model.api.MediaType
 import org.jellyfin.sdk.model.api.UserUpdatedMessage
 import timber.log.Timber
@@ -42,6 +43,7 @@ class ServerEventListener
         @param:ActivityContext private val context: Context,
         private val api: ApiClient,
         private val serverRepository: ServerRepository,
+        private val libraryChangedNotifier: LibraryChangedNotifier,
     ) : DefaultLifecycleObserver {
         private val activity = (context as AppCompatActivity)
 
@@ -127,6 +129,14 @@ class ServerEventListener
                                 }.collectLatestIn(this@coroutineScope) { msg ->
                                     Timber.v("Got updated user: %s", msg.data?.id)
                                     msg.data?.let { serverRepository.updateUserDto(it) }
+                                }
+
+                            api.webSocket
+                                .subscribe<LibraryChangedMessage>()
+                                .catch { ex ->
+                                    Timber.e(ex, "Error in library changed websocket subscription")
+                                }.collectLatestIn(this@coroutineScope) { message ->
+                                    message.data?.let(libraryChangedNotifier::notify)
                                 }
                         }
                     } catch (ex: CancellationException) {
