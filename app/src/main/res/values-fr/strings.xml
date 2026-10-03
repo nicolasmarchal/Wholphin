@@ -724,6 +724,12 @@
     <string name="audio_books">Livre audio</string>
     <string name="server_version_not_supported">Version du serveur non prise en charge</string>
     <string name="appears_on">Apparaît dans</string>
+    <string name="companion_integration">Service Companion</string>
+    <string name="companion_server_url">Adresse du serveur Companion</string>
+    <string name="companion_server_configured">Serveur Companion configuré</string>
+    <string name="companion_invalid_url">Saisissez une adresse HTTP(S) valide pour le Companion.</string>
+    <string name="companion_unreachable">Le serveur Companion est inaccessible.</string>
+    <string name="companion_not_ready">Le serveur Companion n’est pas prêt.</string>
     <string name="release_see_releases">Voir les releases</string>
     <string name="release_releases_title">Releases disponibles</string>
     <string name="release_download">Télécharger</string>

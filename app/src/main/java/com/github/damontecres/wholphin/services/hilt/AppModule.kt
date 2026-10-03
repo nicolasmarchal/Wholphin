@@ -1,10 +1,12 @@
 package com.github.damontecres.wholphin.services.hilt
 
 import android.content.Context
+import androidx.datastore.core.DataStore
 import androidx.work.WorkManager
 import com.github.damontecres.wholphin.BuildConfig
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.ServerRepository
+import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.services.ReleaseCompanionFeature
 import com.github.damontecres.wholphin.services.SeerrApi
 import com.github.damontecres.wholphin.services.release.CompanionOriginPolicy
@@ -14,6 +16,8 @@ import com.github.damontecres.wholphin.services.release.JellyfinCredential
 import com.github.damontecres.wholphin.services.release.JellyfinCredentialProvider
 import com.github.damontecres.wholphin.services.release.OkHttpReleaseCompanionTransport
 import com.github.damontecres.wholphin.services.release.ReleaseCompanionException
+import com.github.damontecres.wholphin.services.release.ReleaseHttpMethod
+import com.github.damontecres.wholphin.services.release.ReleaseTransportRequest
 import com.github.damontecres.wholphin.services.release.SensitiveValue
 import com.github.damontecres.wholphin.util.CoroutineContextApiClientFactory
 import com.github.damontecres.wholphin.util.WholphinDispatchers
@@ -25,6 +29,9 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import org.jellyfin.sdk.Jellyfin
 import org.jellyfin.sdk.android.androidDevice
@@ -152,47 +159,75 @@ object AppModule {
     @Singleton
     fun releaseCompanionFeature(
         serverRepository: ServerRepository,
+        preferences: DataStore<AppPreferences>,
         @ReleaseCompanionOkHttpClient okHttpClient: OkHttpClient,
+        @IoCoroutineScope ioScope: CoroutineScope,
     ): ReleaseCompanionFeature {
-        val baseUrl = BuildConfig.COMPANION_BASE_URL.trim()
-        if (!BuildConfig.COMPANION_ENABLED || baseUrl.isEmpty()) {
-            return ReleaseCompanionFeature.disabled()
-        }
-
-        val repository =
-            try {
-                val transport =
-                    OkHttpReleaseCompanionTransport(
-                        baseUrl = baseUrl,
-                        baseClient = okHttpClient,
-                        originPolicy =
-                            CompanionOriginPolicy(
-                                allowCleartext = BuildConfig.COMPANION_ALLOW_CLEARTEXT,
-                            ),
+        val defaultBaseUrl = BuildConfig.COMPANION_BASE_URL.trim()
+        val originPolicy =
+            CompanionOriginPolicy(
+                allowCleartext = BuildConfig.COMPANION_ALLOW_CLEARTEXT,
+            )
+        val credentialProvider =
+            JellyfinCredentialProvider {
+                val current = serverRepository.current.value
+                val token = current?.user?.accessToken?.takeIf(String::isNotBlank)
+                if (current == null || token == null) {
+                    null
+                } else {
+                    JellyfinCredential(
+                        identityKey = "${current.server.id}:${current.user.id}",
+                        accessToken = SensitiveValue.of(token),
                     )
-                val credentialProvider =
-                    JellyfinCredentialProvider {
-                        val current = serverRepository.current.value
-                        val token = current?.user?.accessToken?.takeIf(String::isNotBlank)
-                        if (current == null || token == null) {
-                            null
-                        } else {
-                            JellyfinCredential(
-                                identityKey = "${current.server.id}:${current.user.id}",
-                                accessToken = SensitiveValue.of(token),
-                            )
-                        }
-                    }
-                DefaultReleaseCompanionRepository(
-                    api = DefaultReleaseCompanionApi(transport),
-                    jellyfinCredentialProvider = credentialProvider,
-                )
-            } catch (_: ReleaseCompanionException.InvalidConfiguration) {
-                // Keep startup and the classic Seerr fallback usable when local build settings are
-                // incomplete. The URL itself is intentionally not logged.
-                return ReleaseCompanionFeature.disabled()
+                }
             }
-        return ReleaseCompanionFeature.enabled(repository)
+
+        fun transport(baseUrl: String) =
+            OkHttpReleaseCompanionTransport(
+                baseUrl = baseUrl,
+                baseClient = okHttpClient,
+                originPolicy = originPolicy,
+            )
+
+        val feature =
+            ReleaseCompanionFeature.configurable(
+                buildEnabled = BuildConfig.COMPANION_ENABLED,
+                initialBaseUrl = defaultBaseUrl,
+                baseUrlNormalizer = {
+                    OkHttpReleaseCompanionTransport
+                        .validateBaseUrl(it, originPolicy)
+                        .toString()
+                },
+                repositoryFactory = { baseUrl ->
+                    DefaultReleaseCompanionRepository(
+                        api = DefaultReleaseCompanionApi(transport(baseUrl)),
+                        jellyfinCredentialProvider = credentialProvider,
+                    )
+                },
+                connectionTester = { baseUrl ->
+                    val response =
+                        transport(baseUrl).execute(
+                            ReleaseTransportRequest(
+                                method = ReleaseHttpMethod.GET,
+                                pathSegments = listOf("readyz"),
+                            ),
+                        )
+                    if (response.statusCode != 200) {
+                        throw ReleaseCompanionException.HttpFailure(response.statusCode)
+                    }
+                },
+            )
+
+        if (BuildConfig.COMPANION_ENABLED) {
+            ioScope.launch {
+                preferences.data
+                    .map { stored ->
+                        stored.companionBaseUrl.trim().ifEmpty { defaultBaseUrl }
+                    }.distinctUntilChanged()
+                    .collect(feature::configure)
+            }
+        }
+        return feature
     }
 
     @Provides

@@ -1041,6 +1041,13 @@ sealed interface AppPreference<Pref, T> {
                 setter = { prefs, _ -> prefs },
             )
 
+        val CompanionIntegration =
+            AppClickablePreference<AppPreferences>(
+                title = R.string.companion_integration,
+                getter = { },
+                setter = { prefs, _ -> prefs },
+            )
+
         val QuickConnect =
             AppClickablePreference<AppPreferences>(
                 title = R.string.quick_connect,
@@ -1157,6 +1164,9 @@ val basicPreferences =
                 buildList {
                     if (BuildConfig.DISCOVER_ENABLED) {
                         add(AppPreference.SeerrIntegration)
+                    }
+                    if (BuildConfig.COMPANION_ENABLED) {
+                        add(AppPreference.CompanionIntegration)
                     }
                     add(AppPreference.AdvancedSettings)
                 },

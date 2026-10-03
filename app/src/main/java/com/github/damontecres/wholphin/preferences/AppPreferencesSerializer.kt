@@ -3,6 +3,7 @@ package com.github.damontecres.wholphin.preferences
 import androidx.compose.ui.graphics.toArgb
 import androidx.datastore.core.CorruptionException
 import androidx.datastore.core.Serializer
+import com.github.damontecres.wholphin.BuildConfig
 import com.github.damontecres.wholphin.ui.preferences.subtitle.SubtitleSettings
 import com.google.protobuf.InvalidProtocolBufferException
 import org.jellyfin.sdk.model.api.BaseItemKind
@@ -24,6 +25,7 @@ class AppPreferencesSerializer
                     sendCrashReports = AppPreference.SendCrashReports.defaultValue
                     debugLogging = AppPreference.DebugLogging.defaultValue
                     signInAutomatically = AppPreference.SignInAuto.defaultValue
+                    companionBaseUrl = BuildConfig.COMPANION_BASE_URL
 
                     playbackPreferences =
                         PlaybackPreferences

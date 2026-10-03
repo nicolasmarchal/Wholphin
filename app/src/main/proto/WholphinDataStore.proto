@@ -249,4 +249,5 @@ message AppPreferences {
   PhotoPreferences photo_preferences = 12;
   MusicPreferences music_preferences = 13;
   ExperimentalPreferences experimental_preferences = 14;
+  string companion_base_url = 15;
 }

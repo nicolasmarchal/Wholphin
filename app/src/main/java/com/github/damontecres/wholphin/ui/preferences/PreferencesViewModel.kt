@@ -16,14 +16,17 @@ import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.model.JellyfinUser
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.preferences.resetSubtitles
+import com.github.damontecres.wholphin.preferences.update
 import com.github.damontecres.wholphin.preferences.updateSubtitlePreferences
 import com.github.damontecres.wholphin.services.BackdropService
 import com.github.damontecres.wholphin.services.NavigationManager
 import com.github.damontecres.wholphin.services.Release
+import com.github.damontecres.wholphin.services.ReleaseCompanionFeature
 import com.github.damontecres.wholphin.services.ScreensaverService
 import com.github.damontecres.wholphin.services.SeerrServerRepository
 import com.github.damontecres.wholphin.services.ServerReportService
 import com.github.damontecres.wholphin.services.UpdateChecker
+import com.github.damontecres.wholphin.services.release.ReleaseCompanionException
 import com.github.damontecres.wholphin.ui.launchIO
 import com.github.damontecres.wholphin.util.DataLoadingState
 import com.github.damontecres.wholphin.util.ExceptionHandler
@@ -35,6 +38,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlin.coroutines.cancellation.CancellationException
 import org.jellyfin.sdk.api.client.ApiClient
 import timber.log.Timber
 import javax.inject.Inject
@@ -51,6 +55,7 @@ class PreferencesViewModel
         val screensaverService: ScreensaverService,
         private val serverRepository: ServerRepository,
         private val seerrServerRepository: SeerrServerRepository,
+        private val releaseCompanionFeature: ReleaseCompanionFeature,
         private val updateChecker: UpdateChecker,
         private val serverReportService: ServerReportService,
     ) : ViewModel() {
@@ -68,6 +73,10 @@ class PreferencesViewModel
             )
 
         val seerrConnection = seerrServerRepository.connection
+        val companionConfiguration = releaseCompanionFeature.configuration
+
+        private val _companionConnectionStatus = MutableStateFlow<LoadingState>(LoadingState.Pending)
+        val companionConnectionStatus: StateFlow<LoadingState> = _companionConnectionStatus
 
         private val _quickConnectStatus = MutableStateFlow<LoadingState>(LoadingState.Pending)
         val quickConnectStatus: StateFlow<LoadingState> = _quickConnectStatus
@@ -101,6 +110,40 @@ class PreferencesViewModel
             viewModelScope.launchIO {
                 resetSubtitleSettings(preferenceDataStore)
             }
+        }
+
+        fun submitCompanionServer(url: String) {
+            viewModelScope.launchIO {
+                _companionConnectionStatus.value = LoadingState.Loading
+                try {
+                    val normalized = releaseCompanionFeature.verifyConnection(url)
+                    preferenceDataStore.updateData { preferences ->
+                        preferences.update { companionBaseUrl = normalized }
+                    }
+                    releaseCompanionFeature.configure(normalized)
+                    _companionConnectionStatus.value = LoadingState.Success
+                } catch (ex: CancellationException) {
+                    throw ex
+                } catch (ex: Exception) {
+                    val message =
+                        when (ex) {
+                            is ReleaseCompanionException.InvalidConfiguration -> {
+                                context.getString(R.string.companion_invalid_url)
+                            }
+
+                            is ReleaseCompanionException.HttpFailure -> {
+                                context.getString(R.string.companion_not_ready)
+                            }
+
+                            else -> context.getString(R.string.companion_unreachable)
+                        }
+                    _companionConnectionStatus.value = LoadingState.Error(message, ex)
+                }
+            }
+        }
+
+        fun resetCompanionStatus() {
+            _companionConnectionStatus.value = LoadingState.Pending
         }
 
         fun setPin(

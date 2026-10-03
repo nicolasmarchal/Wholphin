@@ -927,6 +927,12 @@
     <string name="remove_from_playlist">Remove from playlist</string>
     <string name="login_credentials_expired">Credentials expired, please login in again</string>
     <string name="login_not_authorized">You are not authorized to access the server at this time</string>
+    <string name="companion_integration">Release companion</string>
+    <string name="companion_server_url">Companion server address</string>
+    <string name="companion_server_configured">Companion server configured</string>
+    <string name="companion_invalid_url">Enter a valid Companion HTTP(S) address.</string>
+    <string name="companion_unreachable">The Companion server cannot be reached.</string>
+    <string name="companion_not_ready">The Companion server is not ready.</string>
     <plurals name="episodes_count">
         <item quantity="zero">%1$d Episodes</item>
         <item quantity="one">%1$d Episode</item>

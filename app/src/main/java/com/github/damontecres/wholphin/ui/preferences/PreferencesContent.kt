@@ -76,6 +76,7 @@ import com.github.damontecres.wholphin.ui.playSoundOnFocus
 import com.github.damontecres.wholphin.ui.preferences.subtitle.SubtitleSettings
 import com.github.damontecres.wholphin.ui.setup.ReleaseNotes
 import com.github.damontecres.wholphin.ui.setup.UpdateViewModel
+import com.github.damontecres.wholphin.ui.setup.companion.CompanionServerDialog
 import com.github.damontecres.wholphin.ui.setup.seerr.AddSeerServerDialog
 import com.github.damontecres.wholphin.ui.setup.seerr.SwitchSeerrViewModel
 import com.github.damontecres.wholphin.ui.showToast
@@ -114,6 +115,9 @@ fun PreferencesContent(
     var cacheUsage by remember { mutableStateOf(CacheUsage(0, 0, 0)) }
     val seerrConnection by viewModel.seerrConnection.collectAsState()
     var seerrDialogMode by remember { mutableStateOf<SeerrDialogMode>(SeerrDialogMode.None) }
+    val companionConfiguration by viewModel.companionConfiguration.collectAsState()
+    val companionConnectionStatus by viewModel.companionConnectionStatus.collectAsState()
+    var showCompanionDialog by remember { mutableStateOf(false) }
     var showQuickConnectDialog by remember { mutableStateOf(false) }
     var showLocaleChoiceDialog by remember { mutableStateOf(false) }
 
@@ -502,6 +506,23 @@ fun PreferencesContent(
                                     )
                                 }
 
+                                AppPreference.CompanionIntegration -> {
+                                    ClickPreference(
+                                        title = stringResource(pref.title),
+                                        onClick = {
+                                            viewModel.resetCompanionStatus()
+                                            showCompanionDialog = true
+                                        },
+                                        modifier = focusModifier,
+                                        summary =
+                                            companionConfiguration.baseUrl.ifBlank {
+                                                stringResource(R.string.add_server)
+                                            },
+                                        onLongClick = {},
+                                        interactionSource = interactionSource,
+                                    )
+                                }
+
                                 AppPreference.QuickConnect -> {
                                     ClickPreference(
                                         title = stringResource(pref.title),
@@ -740,6 +761,25 @@ fun PreferencesContent(
             }
 
             SeerrDialogMode.None -> {}
+        }
+
+        if (showCompanionDialog) {
+            val configuredMessage = stringResource(R.string.companion_server_configured)
+            LaunchedEffect(companionConnectionStatus) {
+                if (companionConnectionStatus == LoadingState.Success) {
+                    Toast.makeText(context, configuredMessage, Toast.LENGTH_SHORT).show()
+                    showCompanionDialog = false
+                }
+            }
+            CompanionServerDialog(
+                initialUrl = companionConfiguration.baseUrl,
+                status = companionConnectionStatus,
+                onSubmit = viewModel::submitCompanionServer,
+                onDismissRequest = {
+                    viewModel.resetCompanionStatus()
+                    showCompanionDialog = false
+                },
+            )
         }
     }
 
