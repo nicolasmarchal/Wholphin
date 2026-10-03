@@ -40,8 +40,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.jellyfin.sdk.Jellyfin
 import org.jellyfin.sdk.api.client.ApiClient
-import org.jellyfin.sdk.api.client.extensions.quickConnectApi
-import org.jellyfin.sdk.api.operations.QuickConnectApi
+import org.jellyfin.sdk.api.client.extensions.authenticationApi
+import org.jellyfin.sdk.api.operations.AuthenticationApi
 import org.jellyfin.sdk.discovery.DiscoveryService
 import org.jellyfin.sdk.discovery.RecommendedServerInfo
 import org.jellyfin.sdk.discovery.RecommendedServerInfoScore
@@ -150,9 +150,9 @@ class BasicUiTests {
                         ),
                 ),
             )
-        val quickConnectApi = mockk<QuickConnectApi>()
-        every { api.quickConnectApi } returns quickConnectApi
-        coEvery { quickConnectApi.getQuickConnectEnabled() } returns successResponse(true)
+        val authenticationApi = mockk<AuthenticationApi>()
+        every { api.authenticationApi } returns authenticationApi
+        coEvery { authenticationApi.getQuickConnectEnabled() } returns successResponse(true)
 
         composeTestRule.setContent {
             WholphinTheme {
@@ -219,9 +219,9 @@ class BasicUiTests {
                         ),
                 ),
             )
-        val quickConnectApi = mockk<QuickConnectApi>()
-        every { api.quickConnectApi } returns quickConnectApi
-        coEvery { quickConnectApi.getQuickConnectEnabled() } returns successResponse(true)
+        val authenticationApi = mockk<AuthenticationApi>()
+        every { api.authenticationApi } returns authenticationApi
+        coEvery { authenticationApi.getQuickConnectEnabled() } returns successResponse(true)
 
         composeTestRule.setContent {
             WholphinTheme {

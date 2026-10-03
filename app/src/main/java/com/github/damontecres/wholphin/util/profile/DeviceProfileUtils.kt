@@ -461,16 +461,17 @@ fun createDeviceProfile(
 
     // / HDR exclude list
 
-    // TODO Use VideoRangeType enum with Jellyfin 10.11 based SDK
     val unsupportedRangeTypesAv1 =
         buildSet {
-            if (jellyfinTenEleven) add("DOVIInvalid")
+            if (jellyfinTenEleven) add(VideoRangeType.DOVI_INVALID.serialName)
 
             if (!decodeAv1) {
                 if (!supportsAV1DolbyVision) {
                     add(VideoRangeType.DOVI.serialName)
                     if (!supportsAV1HDR10) add(VideoRangeType.DOVI_WITH_HDR10.serialName)
-                    if (jellyfinTenEleven && !supportsAV1HDR10Plus) add("DOVIWithHDR10Plus")
+                    if (jellyfinTenEleven && !supportsAV1HDR10Plus) {
+                        add(VideoRangeType.DOVI_WITH_HDR10_PLUS.serialName)
+                    }
                 }
 
                 if (!supportsAV1HDR10Plus) {
@@ -481,16 +482,17 @@ fun createDeviceProfile(
             }
         }
 
-    // TODO Use VideoRangeType enum with Jellyfin 10.11 based SDK
     val unsupportedRangeTypesHevc =
         buildSet {
-            if (jellyfinTenEleven) add("DOVIInvalid")
+            if (jellyfinTenEleven) add(VideoRangeType.DOVI_INVALID.serialName)
 
             if (!supportsHevcDolbyVisionEL) {
                 if (!dolbyVisionELDirectPlay) {
                     if (jellyfinTenEleven) {
-                        add("DOVIWithEL")
-                        if (!supportsHevcHDR10Plus && !KnownDefects.hevcDoviHdr10PlusBug) add("DOVIWithELHDR10Plus")
+                        add(VideoRangeType.DOVI_WITH_EL.serialName)
+                        if (!supportsHevcHDR10Plus && !KnownDefects.hevcDoviHdr10PlusBug) {
+                            add(VideoRangeType.DOVI_WITH_ELHDR10_PLUS.serialName)
+                        }
                     }
                 }
 
@@ -499,7 +501,7 @@ fun createDeviceProfile(
                     if (!supportsHevcHDR10) add(VideoRangeType.DOVI_WITH_HDR10.serialName)
                     if (jellyfinTenEleven && !supportsHevcHDR10Plus && !KnownDefects.hevcDoviHdr10PlusBug) {
                         add(
-                            "DOVIWithHDR10Plus",
+                            VideoRangeType.DOVI_WITH_HDR10_PLUS.serialName,
                         )
                     }
                 }
@@ -511,8 +513,8 @@ fun createDeviceProfile(
             }
 
             if (jellyfinTenEleven && KnownDefects.hevcDoviHdr10PlusBug) {
-                add("DOVIWithHDR10Plus")
-                add("DOVIWithELHDR10Plus")
+                add(VideoRangeType.DOVI_WITH_HDR10_PLUS.serialName)
+                add(VideoRangeType.DOVI_WITH_ELHDR10_PLUS.serialName)
             }
         }
 

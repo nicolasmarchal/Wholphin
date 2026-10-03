@@ -47,7 +47,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.libraryApi
-import org.jellyfin.sdk.api.client.extensions.videosApi
+import org.jellyfin.sdk.api.client.extensions.videoApi
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.api.MediaStreamType
@@ -214,7 +214,7 @@ class SlideshowViewModel
                             val url =
                                 if (image.data.mediaType == MediaType.VIDEO) {
                                     // TODO this assumes direct play
-                                    api.videosApi.getVideoStreamUrl(
+                                    api.videoApi.getVideoStreamUrl(
                                         itemId = image.id,
                                     )
                                 } else {

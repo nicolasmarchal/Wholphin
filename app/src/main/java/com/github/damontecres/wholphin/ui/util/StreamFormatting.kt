@@ -63,6 +63,7 @@ object StreamFormatting {
                     when (type) {
                         VideoRangeType.UNKNOWN,
                         VideoRangeType.SDR,
+                        VideoRangeType.DOVI_INVALID,
                         null,
                         -> null
 
@@ -76,6 +77,9 @@ object StreamFormatting {
                         VideoRangeType.DOVI_WITH_HDR10,
                         VideoRangeType.DOVI_WITH_HLG,
                         VideoRangeType.DOVI_WITH_SDR,
+                        VideoRangeType.DOVI_WITH_EL,
+                        VideoRangeType.DOVI_WITH_HDR10_PLUS,
+                        VideoRangeType.DOVI_WITH_ELHDR10_PLUS,
                         -> resources.getString(R.string.dolby_vision)
                     }
                 }

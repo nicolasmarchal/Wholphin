@@ -96,7 +96,7 @@ class ServerRepositoryTest {
                 PublicSystemInfo(
                     id = serverId.toServerString(),
                     serverName = "test server",
-                    version = "10.11.11",
+                    version = "12.1.0",
                 ),
                 200,
                 emptyMap(),
@@ -125,7 +125,7 @@ class ServerRepositoryTest {
 
     private val serverId = UUID.randomUUID()
     private val userId = UUID.randomUUID()
-    private val server = JellyfinServer(serverId, "test server", "http://localhost:8096", "10.11.11")
+    private val server = JellyfinServer(serverId, "test server", "http://localhost:8096", "12.1.0")
     private val user =
         JellyfinUser(
             rowId = 1,

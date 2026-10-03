@@ -32,12 +32,12 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.jellyfin.sdk.api.client.ApiClient
-import org.jellyfin.sdk.api.client.extensions.artistsApi
-import org.jellyfin.sdk.api.client.extensions.itemsApi
-import org.jellyfin.sdk.api.client.extensions.personsApi
-import org.jellyfin.sdk.api.operations.ArtistsApi
-import org.jellyfin.sdk.api.operations.ItemsApi
-import org.jellyfin.sdk.api.operations.PersonsApi
+import org.jellyfin.sdk.api.client.extensions.artistApi
+import org.jellyfin.sdk.api.client.extensions.libraryApi
+import org.jellyfin.sdk.api.client.extensions.personApi
+import org.jellyfin.sdk.api.operations.ArtistApi
+import org.jellyfin.sdk.api.operations.LibraryApi
+import org.jellyfin.sdk.api.operations.PersonApi
 import org.jellyfin.sdk.model.UUID
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.CollectionType
@@ -66,15 +66,15 @@ class TestFavoritesViewModel {
     private val rememberedTabService: RememberedTabService = mockk()
     private val navDrawerService: NavDrawerService = mockk()
 
-    private val itemsApi: ItemsApi = mockk()
-    private val artistsApi: ArtistsApi = mockk()
-    private val personsApi: PersonsApi = mockk()
+    private val libraryApi: LibraryApi = mockk()
+    private val artistApi: ArtistApi = mockk()
+    private val personApi: PersonApi = mockk()
 
     @Before
     fun setup() {
-        every { api.itemsApi } returns itemsApi
-        every { api.artistsApi } returns artistsApi
-        every { api.personsApi } returns personsApi
+        every { api.libraryApi } returns libraryApi
+        every { api.artistApi } returns artistApi
+        every { api.personApi } returns personApi
         every { navDrawerService.state } returns
             MutableStateFlow(
                 NavDrawerItemState(
@@ -279,7 +279,7 @@ class TestFavoritesViewModel {
     fun `Test fetchType basic`() =
         runTest {
             val movie = movie()
-            coEvery { itemsApi.getItems(any<GetItemsRequest>()) } returns successQueryResult(listOf(movie))
+            coEvery { libraryApi.getItems(any<GetItemsRequest>()) } returns successQueryResult(listOf(movie))
 
             val viewModel = createViewModel()
             val data =
@@ -299,14 +299,14 @@ class TestFavoritesViewModel {
                     assertTrue(st.items is DataLoadingState.Success)
                 }
             }
-            coVerify(exactly = 1) { itemsApi.getItems(any<GetItemsRequest>()) }
+            coVerify(exactly = 1) { libraryApi.getItems(any<GetItemsRequest>()) }
         }
 
     @Test
     fun `Test fetchType with error`() =
         runTest {
             val ex = Exception()
-            coEvery { itemsApi.getItems(any<GetItemsRequest>()) } throws ex
+            coEvery { libraryApi.getItems(any<GetItemsRequest>()) } throws ex
 
             val viewModel = createViewModel()
             val data =
@@ -327,13 +327,13 @@ class TestFavoritesViewModel {
                     assertEquals(ex, (st.items as DataLoadingState.Error).exception)
                 }
             }
-            coVerify(exactly = 1) { itemsApi.getItems(any<GetItemsRequest>()) }
+            coVerify(exactly = 1) { libraryApi.getItems(any<GetItemsRequest>()) }
         }
 
     @Test
     fun `Test fetchType with empty result does not add tab`() =
         runTest {
-            coEvery { itemsApi.getItems(any<GetItemsRequest>()) } returns successQueryResult()
+            coEvery { libraryApi.getItems(any<GetItemsRequest>()) } returns successQueryResult()
 
             val viewModel = createViewModel()
             val data =
@@ -355,14 +355,14 @@ class TestFavoritesViewModel {
                     assertEquals(0, (st.items as DataLoadingState.Success).data.size)
                 }
             }
-            coVerify(exactly = 1) { itemsApi.getItems(any<GetItemsRequest>()) }
+            coVerify(exactly = 1) { libraryApi.getItems(any<GetItemsRequest>()) }
         }
 
     @Test
     fun `Test fetchType for artists`() =
         runTest {
             val item = item(BaseItemKind.MUSIC_ARTIST)
-            coEvery { artistsApi.getArtists(any<GetArtistsRequest>()) } returns successQueryResult(listOf(item))
+            coEvery { artistApi.getArtists(any<GetArtistsRequest>()) } returns successQueryResult(listOf(item))
 
             val viewModel = createViewModel()
             val data =
@@ -382,16 +382,16 @@ class TestFavoritesViewModel {
                     assertTrue(st.items is DataLoadingState.Success)
                 }
             }
-            coVerify(exactly = 1) { artistsApi.getArtists(any<GetArtistsRequest>()) }
-            coVerify(exactly = 0) { itemsApi.getItems(any<GetItemsRequest>()) }
-            coVerify(exactly = 0) { personsApi.getPersons(any<GetPersonsRequest>()) }
+            coVerify(exactly = 1) { artistApi.getArtists(any<GetArtistsRequest>()) }
+            coVerify(exactly = 0) { libraryApi.getItems(any<GetItemsRequest>()) }
+            coVerify(exactly = 0) { personApi.getPersons(any<GetPersonsRequest>()) }
         }
 
     @Test
     fun `Test fetchType for persons`() =
         runTest {
             val item = item(BaseItemKind.PERSON)
-            coEvery { personsApi.getPersons(any<GetPersonsRequest>()) } returns successQueryResult(listOf(item))
+            coEvery { personApi.getPersons(any<GetPersonsRequest>()) } returns successQueryResult(listOf(item))
 
             val viewModel = createViewModel()
             val data =
@@ -411,9 +411,9 @@ class TestFavoritesViewModel {
                     assertTrue(st.items is DataLoadingState.Success)
                 }
             }
-            coVerify(exactly = 1) { personsApi.getPersons(any<GetPersonsRequest>()) }
-            coVerify(exactly = 0) { itemsApi.getItems(any<GetItemsRequest>()) }
-            coVerify(exactly = 0) { artistsApi.getArtists(any<GetArtistsRequest>()) }
+            coVerify(exactly = 1) { personApi.getPersons(any<GetPersonsRequest>()) }
+            coVerify(exactly = 0) { libraryApi.getItems(any<GetItemsRequest>()) }
+            coVerify(exactly = 0) { artistApi.getArtists(any<GetArtistsRequest>()) }
         }
 }
 

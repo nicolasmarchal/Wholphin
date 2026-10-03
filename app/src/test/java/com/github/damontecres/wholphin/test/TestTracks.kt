@@ -215,6 +215,7 @@ class TestTracks(
                             isDefault = false,
                             isForced = false,
                             isHearingImpaired = false,
+                            isOriginal = false,
                             isTextSubtitleStream = false,
                             supportsExternalStream = false,
                         )

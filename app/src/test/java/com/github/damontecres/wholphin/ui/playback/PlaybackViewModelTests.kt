@@ -54,14 +54,14 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.jellyfin.sdk.api.client.ApiClient
+import org.jellyfin.sdk.api.client.extensions.libraryApi
 import org.jellyfin.sdk.api.client.extensions.mediaInfoApi
-import org.jellyfin.sdk.api.client.extensions.mediaSegmentsApi
-import org.jellyfin.sdk.api.client.extensions.userLibraryApi
-import org.jellyfin.sdk.api.client.extensions.videosApi
+import org.jellyfin.sdk.api.client.extensions.mediaSegmentApi
+import org.jellyfin.sdk.api.client.extensions.videoApi
+import org.jellyfin.sdk.api.operations.LibraryApi
 import org.jellyfin.sdk.api.operations.MediaInfoApi
-import org.jellyfin.sdk.api.operations.MediaSegmentsApi
-import org.jellyfin.sdk.api.operations.UserLibraryApi
-import org.jellyfin.sdk.api.operations.VideosApi
+import org.jellyfin.sdk.api.operations.MediaSegmentApi
+import org.jellyfin.sdk.api.operations.VideoApi
 import org.jellyfin.sdk.model.DeviceInfo
 import org.jellyfin.sdk.model.UUID
 import org.jellyfin.sdk.model.api.MediaSegmentDto
@@ -104,10 +104,10 @@ class PlaybackViewModelTests {
     private val mockScreensaverService = mockk<ScreensaverService>(relaxed = true)
     private val mockMusicService = mockk<MusicService>(relaxed = true)
 
-    private val mockUserLibraryApi = mockk<UserLibraryApi>()
+    private val mockUserLibraryApi = mockk<LibraryApi>()
     private val mockMediaInfoApi = mockk<MediaInfoApi>()
-    private val mockVideosApi = mockk<VideosApi>()
-    private val mockMediaSegmentsApi = mockk<MediaSegmentsApi>()
+    private val mockVideosApi = mockk<VideoApi>()
+    private val mockMediaSegmentsApi = mockk<MediaSegmentApi>()
     private val mockPlayer = mockk<Player>(relaxed = true)
 
     fun create(destination: Destination): PlaybackViewModel =
@@ -141,7 +141,7 @@ class PlaybackViewModelTests {
     private val serverId = UUID.randomUUID()
     private val userId = UUID.randomUUID()
     private val server =
-        JellyfinServer(serverId, "test server", "http://localhost:8096", "10.11.11")
+        JellyfinServer(serverId, "test server", "http://localhost:8096", "12.1.0")
     private val user =
         JellyfinUser(
             rowId = 1,
@@ -173,10 +173,10 @@ class PlaybackViewModelTests {
     fun setUp() {
         WholphinDispatchers.configure(testDispatcher)
 
-        every { mockApi.userLibraryApi } returns mockUserLibraryApi
+        every { mockApi.libraryApi } returns mockUserLibraryApi
         every { mockApi.mediaInfoApi } returns mockMediaInfoApi
-        every { mockApi.videosApi } returns mockVideosApi
-        every { mockApi.mediaSegmentsApi } returns mockMediaSegmentsApi
+        every { mockApi.videoApi } returns mockVideosApi
+        every { mockApi.mediaSegmentApi } returns mockMediaSegmentsApi
 
         coEvery { mockMediaInfoApi.getPostedPlaybackInfo(any(), any()) } returns
             successResponse(

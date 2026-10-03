@@ -954,6 +954,7 @@ fun subtitle(
         isForced = forced,
         isHearingImpaired = false,
         isInterlaced = false,
+        isOriginal = false,
         index = index,
         isExternal = false,
         isTextSubtitleStream = true,

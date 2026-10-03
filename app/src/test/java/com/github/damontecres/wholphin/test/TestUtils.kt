@@ -101,7 +101,7 @@ fun item(
         genreItems = genres,
     )
 
-fun server(serverId: UUID = UUID.randomUUID()) = JellyfinServer(serverId, "test server", "http://localhost:8096", "10.11.11")
+fun server(serverId: UUID = UUID.randomUUID()) = JellyfinServer(serverId, "test server", "http://localhost:8096", "12.1.0")
 
 fun user(
     serverId: UUID,
