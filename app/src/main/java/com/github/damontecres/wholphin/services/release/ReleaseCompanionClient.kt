@@ -9,8 +9,7 @@ data class AuthenticatedCompanionSession(
     val expiresAt: String,
     val user: CompanionSessionUserDto,
 ) {
-    override fun toString(): String =
-        "AuthenticatedCompanionSession(token=<redacted>, expiresAt=$expiresAt, user=$user)"
+    override fun toString(): String = "AuthenticatedCompanionSession(token=<redacted>, expiresAt=$expiresAt, user=$user)"
 }
 
 interface ReleaseCompanionApi {
@@ -39,6 +38,13 @@ interface ReleaseCompanionApi {
     suspend fun listAcquisitions(
         sessionToken: SensitiveValue,
         subject: ReleaseSubject,
+        active: Boolean? = null,
+    ): List<AcquisitionJobDto>
+
+    /** Lists every season/episode job for one TMDb series, for process-death rehydration. */
+    suspend fun listSeriesAcquisitions(
+        sessionToken: SensitiveValue,
+        tmdbId: Int,
         active: Boolean? = null,
     ): List<AcquisitionJobDto>
 
@@ -164,6 +170,28 @@ class DefaultReleaseCompanionApi(
                 ),
             ).decodeExpected(setOf(200))
 
+    override suspend fun listSeriesAcquisitions(
+        sessionToken: SensitiveValue,
+        tmdbId: Int,
+        active: Boolean?,
+    ): List<AcquisitionJobDto> {
+        require(tmdbId > 0) { "tmdbId must be positive" }
+        return transport
+            .execute(
+                ReleaseTransportRequest(
+                    method = ReleaseHttpMethod.GET,
+                    pathSegments = listOf("v1", "acquisitions"),
+                    query =
+                        buildMap {
+                            if (active != null) put("active", active.toString())
+                            put("mediaType", "tv")
+                            put("tmdbId", tmdbId.toString())
+                        },
+                    bearerToken = sessionToken,
+                ),
+            ).decodeExpected(setOf(200))
+    }
+
     override suspend fun getAcquisition(
         sessionToken: SensitiveValue,
         acquisitionId: String,
@@ -204,8 +232,12 @@ class DefaultReleaseCompanionApi(
             put("kind", toDto().kind.wireValue)
             put("tmdbId", tmdbId.toString())
             when (this@toQuery) {
-                is ReleaseSubject.Movie -> Unit
-                is ReleaseSubject.TvSeason -> put("seasonNumber", seasonNumber.toString())
+                is ReleaseSubject.Movie -> {}
+
+                is ReleaseSubject.TvSeason -> {
+                    put("seasonNumber", seasonNumber.toString())
+                }
+
                 is ReleaseSubject.TvEpisode -> {
                     put("seasonNumber", seasonNumber.toString())
                     put("episodeNumber", episodeNumber.toString())
@@ -218,9 +250,7 @@ class DefaultReleaseCompanionApi(
         return value
     }
 
-    private inline fun <reified T> ReleaseTransportResponse.decodeExpected(
-        expectedStatuses: Set<Int>,
-    ): T {
+    private inline fun <reified T> ReleaseTransportResponse.decodeExpected(expectedStatuses: Set<Int>): T {
         requireStatus(expectedStatuses)
         return try {
             json.decodeFromString(body)
@@ -251,30 +281,51 @@ class DefaultReleaseCompanionApi(
         error: CompanionErrorDto?,
     ): ReleaseCompanionException =
         when (response.statusCode) {
-            401 -> ReleaseCompanionException.AuthenticationRequired(error?.code)
-            403 -> ReleaseCompanionException.Forbidden(error?.code)
-            404 -> ReleaseCompanionException.NotFound(error?.code)
-            409 -> ReleaseCompanionException.Conflict(error?.code)
-            410 -> ReleaseCompanionException.SelectionExpired(error?.code)
-            422 -> ReleaseCompanionException.SelectionRejected(error?.code)
-            429 ->
+            401 -> {
+                ReleaseCompanionException.AuthenticationRequired(error?.code)
+            }
+
+            403 -> {
+                ReleaseCompanionException.Forbidden(error?.code)
+            }
+
+            404 -> {
+                ReleaseCompanionException.NotFound(error?.code)
+            }
+
+            409 -> {
+                ReleaseCompanionException.Conflict(error?.code)
+            }
+
+            410 -> {
+                ReleaseCompanionException.SelectionExpired(error?.code)
+            }
+
+            422 -> {
+                ReleaseCompanionException.SelectionRejected(error?.code)
+            }
+
+            429 -> {
                 ReleaseCompanionException.RateLimited(
                     retryAfterSeconds = response.header("Retry-After")?.toLongOrNull(),
                     errorCode = error?.code,
                 )
+            }
 
-            502, 503, 504 ->
+            502, 503, 504 -> {
                 ReleaseCompanionException.UpstreamUnavailable(
                     statusCode = response.statusCode,
                     errorCode = error?.code,
                 )
+            }
 
-            else ->
+            else -> {
                 ReleaseCompanionException.HttpFailure(
                     statusCode = response.statusCode,
                     errorCode = error?.code,
                     retryable = error?.retryable ?: (response.statusCode >= 500),
                 )
+            }
         }
 }
 

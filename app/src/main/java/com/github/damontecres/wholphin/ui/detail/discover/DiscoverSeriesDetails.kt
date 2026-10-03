@@ -30,6 +30,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.api.seerr.model.TvDetails
 import com.github.damontecres.wholphin.data.model.BaseItem
@@ -43,6 +44,10 @@ import com.github.damontecres.wholphin.preferences.UserPreferences
 import com.github.damontecres.wholphin.services.SeerrUserConfig
 import com.github.damontecres.wholphin.services.TrailerService
 import com.github.damontecres.wholphin.services.jellyfinId
+import com.github.damontecres.wholphin.services.release.ReleaseCandidate
+import com.github.damontecres.wholphin.services.release.ReleaseSubject
+import com.github.damontecres.wholphin.services.release.ReleaseWorkflowState
+import com.github.damontecres.wholphin.services.release.redactedFingerprint
 import com.github.damontecres.wholphin.ui.LocalImageUrlService
 import com.github.damontecres.wholphin.ui.cards.DiscoverItemCard
 import com.github.damontecres.wholphin.ui.cards.DiscoverPersonRow
@@ -86,13 +91,31 @@ fun DiscoverSeriesDetails(
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
+    LifecycleResumeEffect(Unit) {
+        viewModel.onVisible()
+        onPauseOrDispose { viewModel.onHidden() }
+    }
     val state by viewModel.state.collectAsState()
+    val releaseState by viewModel.releaseState.collectAsState()
+    val releaseSubject by viewModel.releaseSubject.collectAsState()
     val request4kEnabled by viewModel.request4kEnabled.collectAsState()
 
     var overviewDialog by remember { mutableStateOf<ItemDetailsDialogInfo?>(null) }
     var seasonDialog by remember { mutableStateOf<DialogParams?>(null) }
     var moreDialog by remember { mutableStateOf<DialogParams?>(null) }
     var showRequestSeasonDialog by remember { mutableStateOf(false) }
+    var showReleaseSeasonPicker by remember { mutableStateOf(false) }
+    var showReleaseEpisodePicker by remember { mutableStateOf(false) }
+    var showReleaseDialog by remember { mutableStateOf(false) }
+    var releaseToConfirm by remember { mutableStateOf<ReleaseCandidate?>(null) }
+    var restoreSelectionFingerprint by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(releaseState) {
+        if (releaseState is ReleaseWorkflowState.Available) {
+            showReleaseDialog = false
+            releaseToConfirm = null
+        }
+    }
 
     when (val st = state.tvSeries) {
         is DataLoadingState.Error -> {
@@ -108,6 +131,65 @@ fun DiscoverSeriesDetails(
         is DataLoadingState.Success<TvDetails> -> {
             val item = st.data
             val userConfig by viewModel.userConfig.collectAsState(null)
+            val availability =
+                SeerrAvailability.from(item.mediaInfo?.status) ?: SeerrAvailability.UNKNOWN
+            val primaryAction =
+                if (shouldUseCompanionAction(viewModel.releaseCompanionEnabled, availability, releaseState)) {
+                    DiscoverPrimaryAction(
+                        title = releasePrimaryTitle(releaseState, series = true),
+                        icon =
+                            when (releaseState) {
+                                is ReleaseWorkflowState.Available -> R.string.fa_play
+
+                                is ReleaseWorkflowState.Rehydrating,
+                                is ReleaseWorkflowState.Submitting,
+                                is ReleaseWorkflowState.Tracking,
+                                -> R.string.fa_clock
+
+                                else -> R.string.fa_download
+                            },
+                        onClick = {
+                            when (releaseState) {
+                                is ReleaseWorkflowState.Available -> viewModel.openCompanionSeries()
+
+                                ReleaseWorkflowState.Idle,
+                                is ReleaseWorkflowState.Ready,
+                                -> showReleaseSeasonPicker = true
+
+                                is ReleaseWorkflowState.Rehydrating -> showReleaseDialog = true
+
+                                else -> showReleaseDialog = true
+                            }
+                        },
+                    )
+                } else {
+                    null
+                }
+            val partialRequestAction =
+                if (
+                    viewModel.releaseCompanionEnabled &&
+                    availability == SeerrAvailability.PARTIALLY_AVAILABLE &&
+                    releaseState !is ReleaseWorkflowState.Submitting &&
+                    releaseState !is ReleaseWorkflowState.Tracking &&
+                    releaseState !is ReleaseWorkflowState.Rehydrating
+                ) {
+                    DiscoverPrimaryAction(
+                        title = R.string.release_see_releases,
+                        icon = R.string.fa_download,
+                        onClick = {
+                            when (releaseState) {
+                                ReleaseWorkflowState.Idle,
+                                is ReleaseWorkflowState.Ready,
+                                is ReleaseWorkflowState.Available,
+                                -> showReleaseSeasonPicker = true
+
+                                else -> showReleaseDialog = true
+                            }
+                        },
+                    )
+                } else {
+                    null
+                }
             DiscoverSeriesDetailsContent(
                 preferences = preferences,
                 series = item,
@@ -152,7 +234,86 @@ fun DiscoverSeriesDetails(
                 },
                 onLongClickPerson = { _, _ -> },
                 onLongClickSimilar = { _, _ -> },
+                primaryAction = primaryAction,
+                partialRequestAction = partialRequestAction,
+                releaseState = releaseState,
             )
+
+            if (showReleaseSeasonPicker) {
+                ReleaseSeasonPickerDialog(
+                    seasons = item.seasons.orEmpty(),
+                    onDismissRequest = { showReleaseSeasonPicker = false },
+                    onSeasonSelected = { seasonNumber ->
+                        showReleaseSeasonPicker = false
+                        restoreSelectionFingerprint = null
+                        viewModel.searchSeasonReleases(seasonNumber)
+                        showReleaseDialog = true
+                    },
+                )
+            }
+            if (showReleaseEpisodePicker) {
+                ReleaseEpisodePickerDialog(
+                    state = state.episodePicker,
+                    onDismissRequest = {
+                        showReleaseEpisodePicker = false
+                        showReleaseDialog = true
+                    },
+                    onRetry = viewModel::loadEpisodesForSelectedSeason,
+                    onEpisodeSelected = { episodeNumber ->
+                        showReleaseEpisodePicker = false
+                        restoreSelectionFingerprint = null
+                        viewModel.searchEpisodeReleases(episodeNumber)
+                        showReleaseDialog = true
+                    },
+                )
+            }
+            if (showReleaseDialog && releaseToConfirm == null) {
+                ReleaseWorkflowDialog(
+                    state = releaseState,
+                    subject = releaseSubject,
+                    canFallback = userConfig.hasPermission(SeerrPermission.REQUEST),
+                    restoreSelectionFingerprint = restoreSelectionFingerprint,
+                    onDismissRequest = { showReleaseDialog = false },
+                    onRetry = {
+                        if (releaseSubject == null) {
+                            showReleaseDialog = false
+                            showReleaseSeasonPicker = true
+                        } else {
+                            viewModel.retryReleaseSearch()
+                        }
+                    },
+                    onSelect = { release ->
+                        restoreSelectionFingerprint = release.selectionToken.redactedFingerprint()
+                        releaseToConfirm = release
+                    },
+                    onFallback = {
+                        showReleaseDialog = false
+                        viewModel.requestOnClick()
+                        showRequestSeasonDialog = true
+                    },
+                    onSearchEpisode =
+                        if (releaseSubject is ReleaseSubject.TvSeason) {
+                            {
+                                showReleaseDialog = false
+                                viewModel.loadEpisodesForSelectedSeason()
+                                showReleaseEpisodePicker = true
+                            }
+                        } else {
+                            null
+                        },
+                )
+            }
+            releaseToConfirm?.let { release ->
+                ReleaseConfirmationDialog(
+                    release = release,
+                    onCancel = { releaseToConfirm = null },
+                    onDownload = {
+                        releaseToConfirm = null
+                        viewModel.confirmRelease(release)
+                        showReleaseDialog = true
+                    },
+                )
+            }
         }
     }
     overviewDialog?.let { info ->
@@ -229,6 +390,9 @@ fun DiscoverSeriesDetailsContent(
     onLongClickPerson: (Int, DiscoverItem) -> Unit,
     onLongClickSimilar: (Int, DiscoverItem) -> Unit,
     modifier: Modifier = Modifier,
+    primaryAction: DiscoverPrimaryAction? = null,
+    partialRequestAction: DiscoverPrimaryAction? = null,
+    releaseState: ReleaseWorkflowState = ReleaseWorkflowState.Idle,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -294,11 +458,17 @@ fun DiscoverSeriesDetailsContent(
                             canCancel = canCancel,
                             trailers = trailers,
                             trailerOnClick = trailerOnClick,
+                            primaryAction = primaryAction,
+                            partialRequestAction = partialRequestAction,
                             modifier =
                                 Modifier
                                     .fillMaxWidth()
                                     .padding(bottom = 16.dp)
                                     .focusRequester(focusRequesters[HEADER_ROW]),
+                        )
+                        ReleaseCompactStatus(
+                            state = releaseState,
+                            modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 12.dp),
                         )
                     }
                 }

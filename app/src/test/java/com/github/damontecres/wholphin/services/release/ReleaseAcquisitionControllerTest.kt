@@ -36,6 +36,40 @@ class ReleaseAcquisitionControllerTest {
         }
 
     @Test
+    fun `series process restart restores exact subject returned by the server`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.rehydratedSeries =
+                acquisition(
+                    subject = ReleaseSubject.TvEpisode(22, 3, 7, tvdbId = 220),
+                    state = "available",
+                    jellyfinItemId = "11111111-1111-1111-1111-111111111111",
+                )
+            val controller = controller(repository)
+            var resolved: ReleaseSubject? = null
+
+            controller.resumeLatestSeries(22, onSubjectResolved = { resolved = it })
+            advanceUntilIdle()
+
+            assertEquals(ReleaseSubject.TvEpisode(22, 3, 7, 220), resolved)
+            assertTrue(controller.state.value is ReleaseWorkflowState.Available)
+            assertEquals(listOf(22), repository.rehydratedSeriesIds)
+        }
+
+    @Test
+    fun `series process restart without a job becomes ready without inventing an acquisition`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            val controller = controller(repository)
+            val fallback = ReleaseSubject.TvSeason(22, 0)
+
+            controller.resumeLatestSeries(22, fallback)
+            advanceUntilIdle()
+
+            assertEquals(ReleaseWorkflowState.Ready(fallback), controller.state.value)
+        }
+
+    @Test
     fun `completed search exposes API candidates without altering their fields`() =
         runTest {
             val expected = candidate()
@@ -49,6 +83,24 @@ class ReleaseAcquisitionControllerTest {
 
             val state = controller.state.value as ReleaseWorkflowState.Results
             assertSame(expected, state.search.releases.single())
+        }
+
+    @Test
+    fun `lifecycle resume keeps completed release results instead of replacing them with ready`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.startedSearch = { subject -> search(subject, "completed", listOf(candidate())) }
+            val controller = controller(repository)
+            val subject = ReleaseSubject.Movie(42)
+
+            controller.search(subject)
+            advanceUntilIdle()
+            controller.stopPolling()
+            controller.resumeAfterLifecycle(subject)
+            advanceUntilIdle()
+
+            assertTrue(controller.state.value is ReleaseWorkflowState.Results)
+            assertTrue(repository.rehydratedSubjects.isEmpty())
         }
 
     @Test
@@ -120,12 +172,31 @@ class ReleaseAcquisitionControllerTest {
             advanceUntilIdle()
             assertTrue(controller.state.value is ReleaseWorkflowState.Failed)
 
-            controller.confirm(ReleaseSubject.Movie(42), selected)
+            controller.retry(ReleaseSubject.Movie(42))
             advanceUntilIdle()
 
             assertEquals(2, repository.acquireCalls)
             assertSame(keys[0], keys[1])
             assertTrue(controller.state.value is ReleaseWorkflowState.Available)
+        }
+
+    @Test
+    fun `tracking network failure retains canonical job for a safe retry`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.rehydrated = acquisition(state = "downloading")
+            repository.polledAcquisition = {
+                throw ReleaseCompanionException.Network(IOException("offline"))
+            }
+            val controller = controller(repository)
+            val subject = ReleaseSubject.Movie(42)
+
+            controller.resume(subject)
+            advanceUntilIdle()
+
+            val failed = controller.state.value as ReleaseWorkflowState.Failed
+            assertEquals(ReleaseOperationStage.TRACKING, failed.stage)
+            assertEquals("acquisition-1", failed.lastAcquisition?.id)
         }
 
     @Test
@@ -143,6 +214,26 @@ class ReleaseAcquisitionControllerTest {
             assertEquals(0, repository.acquireCalls)
             val state = controller.state.value as ReleaseWorkflowState.Failed
             assertTrue(state.error is ReleaseCompanionException.SelectionRejected)
+        }
+
+    @Test
+    fun `malformed candidate expiry starts a fresh search instead of retrying its token`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            val controller = controller(repository)
+            val subject = ReleaseSubject.Movie(42)
+
+            controller.confirm(subject, candidate(expiresAt = "not-an-instant"))
+            advanceUntilIdle()
+
+            assertEquals(0, repository.acquireCalls)
+            assertTrue(controller.state.value is ReleaseWorkflowState.SearchExpired)
+
+            controller.retry(subject)
+            advanceUntilIdle()
+
+            assertEquals(0, repository.acquireCalls)
+            assertTrue(controller.state.value is ReleaseWorkflowState.Empty)
         }
 
     @Test
@@ -207,12 +298,17 @@ class ReleaseAcquisitionControllerTest {
 
 private class FakeReleaseRepository : ReleaseCompanionRepository {
     val rehydratedSubjects = mutableListOf<ReleaseSubject>()
+    val rehydratedSeriesIds = mutableListOf<Int>()
     var rehydrated: AcquisitionJobDto? = null
+    var rehydratedSeries: AcquisitionJobDto? = null
     var startedSearch: suspend (ReleaseSubject) -> ReleaseSearchDto = { search(it, "completed") }
     var polledSearch: suspend (String) -> ReleaseSearchDto = {
         search(ReleaseSubject.Movie(42), "completed")
     }
     var acquired: suspend (String, SensitiveValue) -> AcquisitionJobDto = { _, _ -> acquisition() }
+    var polledAcquisition: suspend (String) -> AcquisitionJobDto = {
+        acquisition(state = "available", jellyfinItemId = "11111111-1111-1111-1111-111111111111")
+    }
     var acquireCalls = 0
     var searchPollCount = 0
 
@@ -238,8 +334,12 @@ private class FakeReleaseRepository : ReleaseCompanionRepository {
         return rehydrated
     }
 
-    override suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto =
-        acquisition(state = "available", jellyfinItemId = "11111111-1111-1111-1111-111111111111")
+    override suspend fun rehydrateLatestSeries(tmdbId: Int): AcquisitionJobDto? {
+        rehydratedSeriesIds += tmdbId
+        return rehydratedSeries
+    }
+
+    override suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto = polledAcquisition(acquisitionId)
 
     override suspend fun cancel(
         acquisitionId: String,

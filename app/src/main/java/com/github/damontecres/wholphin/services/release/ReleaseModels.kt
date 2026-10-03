@@ -2,6 +2,7 @@ package com.github.damontecres.wholphin.services.release
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.jellyfin.sdk.model.serializer.toUUIDOrNull
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.format.DateTimeParseException
@@ -74,41 +75,48 @@ data class ReleaseSubjectDto(
 ) {
     fun toDomain(): ReleaseSubject =
         when (kind) {
-            ReleaseSubjectKind.MOVIE -> ReleaseSubject.Movie(tmdbId)
-            ReleaseSubjectKind.TV_SEASON ->
+            ReleaseSubjectKind.MOVIE -> {
+                ReleaseSubject.Movie(tmdbId)
+            }
+
+            ReleaseSubjectKind.TV_SEASON -> {
                 ReleaseSubject.TvSeason(
                     tmdbId = tmdbId,
                     tvdbId = tvdbId,
                     seasonNumber = requireNotNull(seasonNumber) { "seasonNumber is required for a season" },
                 )
+            }
 
-            ReleaseSubjectKind.TV_EPISODE ->
+            ReleaseSubjectKind.TV_EPISODE -> {
                 ReleaseSubject.TvEpisode(
                     tmdbId = tmdbId,
                     tvdbId = tvdbId,
                     seasonNumber = requireNotNull(seasonNumber) { "seasonNumber is required for an episode" },
                     episodeNumber = requireNotNull(episodeNumber) { "episodeNumber is required for an episode" },
                 )
+            }
         }
 }
 
 fun ReleaseSubject.toDto(): ReleaseSubjectDto =
     when (this) {
-        is ReleaseSubject.Movie ->
+        is ReleaseSubject.Movie -> {
             ReleaseSubjectDto(
                 kind = ReleaseSubjectKind.MOVIE,
                 tmdbId = tmdbId,
             )
+        }
 
-        is ReleaseSubject.TvSeason ->
+        is ReleaseSubject.TvSeason -> {
             ReleaseSubjectDto(
                 kind = ReleaseSubjectKind.TV_SEASON,
                 tmdbId = tmdbId,
                 tvdbId = tvdbId,
                 seasonNumber = seasonNumber,
             )
+        }
 
-        is ReleaseSubject.TvEpisode ->
+        is ReleaseSubject.TvEpisode -> {
             ReleaseSubjectDto(
                 kind = ReleaseSubjectKind.TV_EPISODE,
                 tmdbId = tmdbId,
@@ -116,7 +124,33 @@ fun ReleaseSubject.toDto(): ReleaseSubjectDto =
                 seasonNumber = seasonNumber,
                 episodeNumber = episodeNumber,
             )
+        }
     }
+
+internal fun ReleaseSubject.seasonNumberOrNull(): Int? =
+    when (this) {
+        is ReleaseSubject.Movie -> null
+        is ReleaseSubject.TvSeason -> seasonNumber
+        is ReleaseSubject.TvEpisode -> seasonNumber
+    }
+
+/** Client-side defence in depth; the BFF repeats these exact coverage checks authoritatively. */
+internal fun ReleaseCandidate.matchesSubject(subject: ReleaseSubject): Boolean =
+    selectable &&
+        when (subject) {
+            is ReleaseSubject.Movie -> {
+                true
+            }
+
+            is ReleaseSubject.TvSeason -> {
+                fullSeason && (seasonNumber == null || seasonNumber == subject.seasonNumber)
+            }
+
+            is ReleaseSubject.TvEpisode -> {
+                (seasonNumber == null || seasonNumber == subject.seasonNumber) &&
+                    (episodeNumbers.isEmpty() || subject.episodeNumber in episodeNumbers)
+            }
+        }
 
 /**
  * One release candidate returned by the companion.
@@ -255,9 +289,7 @@ data class AcquisitionJobDto(
     val phase: AcquisitionPhase get() = AcquisitionPhase.fromWire(state)
 
     val jellyfinUuid: UUID?
-        get() = jellyfinItemId?.let { value ->
-            runCatching { UUID.fromString(value) }.getOrNull()
-        }
+        get() = jellyfinItemId?.toUUIDOrNull()
 }
 
 @Serializable
@@ -300,8 +332,7 @@ data class CompanionSessionDto(
     val expiresAt: String,
     val user: CompanionSessionUserDto,
 ) {
-    override fun toString(): String =
-        "CompanionSessionDto(token=<redacted>, expiresAt=$expiresAt, user=$user)"
+    override fun toString(): String = "CompanionSessionDto(token=<redacted>, expiresAt=$expiresAt, user=$user)"
 }
 
 @Serializable

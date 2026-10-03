@@ -14,8 +14,7 @@ data class JellyfinCredential(
         require(identityKey.isNotBlank()) { "Jellyfin credential identity must not be blank" }
     }
 
-    override fun toString(): String =
-        "JellyfinCredential(identityKey=<redacted>, accessToken=<redacted>)"
+    override fun toString(): String = "JellyfinCredential(identityKey=<redacted>, accessToken=<redacted>)"
 }
 
 fun interface JellyfinCredentialProvider {
@@ -40,6 +39,8 @@ interface ReleaseCompanionRepository {
     ): AcquisitionJobDto
 
     suspend fun rehydrate(subject: ReleaseSubject): AcquisitionJobDto?
+
+    suspend fun rehydrateLatestSeries(tmdbId: Int): AcquisitionJobDto?
 
     suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto
 
@@ -73,20 +74,16 @@ class DefaultReleaseCompanionRepository(
         require(!refreshBeforeExpiry.isNegative) { "refreshBeforeExpiry must not be negative" }
     }
 
-    override suspend fun capabilities(): CompanionCapabilitiesDto =
-        authenticated { api.getCapabilities(it) }
+    override suspend fun capabilities(): CompanionCapabilitiesDto = authenticated { api.getCapabilities(it) }
 
-    override suspend fun startSearch(subject: ReleaseSubject): ReleaseSearchDto =
-        authenticated { api.startReleaseSearch(it, subject) }
+    override suspend fun startSearch(subject: ReleaseSubject): ReleaseSearchDto = authenticated { api.startReleaseSearch(it, subject) }
 
-    override suspend fun getSearch(searchId: String): ReleaseSearchDto =
-        authenticated { api.getReleaseSearch(it, searchId) }
+    override suspend fun getSearch(searchId: String): ReleaseSearchDto = authenticated { api.getReleaseSearch(it, searchId) }
 
     override suspend fun acquire(
         selectionToken: String,
         idempotencyKey: SensitiveValue,
-    ): AcquisitionJobDto =
-        authenticated { api.acquireRelease(it, selectionToken, idempotencyKey) }
+    ): AcquisitionJobDto = authenticated { api.acquireRelease(it, selectionToken, idempotencyKey) }
 
     override suspend fun rehydrate(subject: ReleaseSubject): AcquisitionJobDto? =
         authenticated { token ->
@@ -100,14 +97,27 @@ class DefaultReleaseCompanionRepository(
                 .maxByOrNull { it.updatedAtInstantOrMinimum() }
         }
 
-    override suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto =
-        authenticated { api.getAcquisition(it, acquisitionId) }
+    override suspend fun rehydrateLatestSeries(tmdbId: Int): AcquisitionJobDto? {
+        require(tmdbId > 0) { "tmdbId must be positive" }
+        return authenticated { token ->
+            api
+                .listSeriesAcquisitions(
+                    sessionToken = token,
+                    tmdbId = tmdbId,
+                    active = true,
+                ).asSequence()
+                .filter { it.subject.isSeriesSubject(tmdbId) }
+                .filterNot { it.phase.terminal }
+                .maxByOrNull { it.updatedAtInstantOrMinimum() }
+        }
+    }
+
+    override suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto = authenticated { api.getAcquisition(it, acquisitionId) }
 
     override suspend fun cancel(
         acquisitionId: String,
         idempotencyKey: SensitiveValue,
-    ): AcquisitionJobDto =
-        authenticated { api.cancelAcquisition(it, acquisitionId, idempotencyKey) }
+    ): AcquisitionJobDto = authenticated { api.cancelAcquisition(it, acquisitionId, idempotencyKey) }
 
     override suspend fun clearSession(revokeRemotely: Boolean) {
         val previous = sessionMutex.withLock { session.also { session = null } }
@@ -176,8 +186,7 @@ private data class IdentityBoundSession(
     val identityKey: String,
     val session: AuthenticatedCompanionSession,
 ) {
-    override fun toString(): String =
-        "IdentityBoundSession(identityKey=<redacted>, session=$session)"
+    override fun toString(): String = "IdentityBoundSession(identityKey=<redacted>, session=$session)"
 }
 
 private fun ReleaseSubjectDto.matches(subject: ReleaseSubject): Boolean {
@@ -188,5 +197,8 @@ private fun ReleaseSubjectDto.matches(subject: ReleaseSubject): Boolean {
         episodeNumber == expected.episodeNumber
 }
 
-private fun AcquisitionJobDto.updatedAtInstantOrMinimum(): Instant =
-    runCatching { Instant.parse(updatedAt) }.getOrDefault(Instant.MIN)
+private fun ReleaseSubjectDto.isSeriesSubject(tmdbId: Int): Boolean =
+    this.tmdbId == tmdbId &&
+        (kind == ReleaseSubjectKind.TV_SEASON || kind == ReleaseSubjectKind.TV_EPISODE)
+
+private fun AcquisitionJobDto.updatedAtInstantOrMinimum(): Instant = runCatching { Instant.parse(updatedAt) }.getOrDefault(Instant.MIN)

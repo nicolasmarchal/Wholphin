@@ -1,12 +1,14 @@
 package com.github.damontecres.wholphin.ui.detail.discover
 
 import android.content.Context
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.damontecres.wholphin.api.seerr.model.MediaInfo
 import com.github.damontecres.wholphin.api.seerr.model.RelatedVideo
 import com.github.damontecres.wholphin.api.seerr.model.RequestPostRequest
 import com.github.damontecres.wholphin.api.seerr.model.RequestRequestIdPutRequest
+import com.github.damontecres.wholphin.api.seerr.model.Season
 import com.github.damontecres.wholphin.api.seerr.model.TvDetails
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.model.DiscoverItem
@@ -17,9 +19,18 @@ import com.github.damontecres.wholphin.data.model.SeerrAvailability
 import com.github.damontecres.wholphin.data.model.SeerrItemType
 import com.github.damontecres.wholphin.data.model.Trailer
 import com.github.damontecres.wholphin.services.BackdropService
+import com.github.damontecres.wholphin.services.LibraryChangedNotifier
 import com.github.damontecres.wholphin.services.NavigationManager
+import com.github.damontecres.wholphin.services.ReleaseCompanionFeature
 import com.github.damontecres.wholphin.services.SeerrServerRepository
 import com.github.damontecres.wholphin.services.SeerrService
+import com.github.damontecres.wholphin.services.release.AcquisitionPhase
+import com.github.damontecres.wholphin.services.release.ReleaseAcquisitionController
+import com.github.damontecres.wholphin.services.release.ReleaseCandidate
+import com.github.damontecres.wholphin.services.release.ReleaseSubject
+import com.github.damontecres.wholphin.services.release.ReleaseWorkflowState
+import com.github.damontecres.wholphin.services.release.matchesSubject
+import com.github.damontecres.wholphin.services.release.seasonNumberOrNull
 import com.github.damontecres.wholphin.ui.isNotNullOrBlank
 import com.github.damontecres.wholphin.ui.launchDefault
 import com.github.damontecres.wholphin.ui.launchIO
@@ -41,11 +52,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.model.api.BaseItemKind
 import timber.log.Timber
@@ -61,6 +74,9 @@ class DiscoverSeriesViewModel
         val serverRepository: ServerRepository,
         val seerrService: SeerrService,
         private val seerrServerRepository: SeerrServerRepository,
+        releaseCompanionFeature: ReleaseCompanionFeature,
+        private val libraryChangedNotifier: LibraryChangedNotifier,
+        private val savedStateHandle: SavedStateHandle,
         @Assisted val item: DiscoverItem,
     ) : ViewModel() {
         @AssistedFactory
@@ -71,6 +87,20 @@ class DiscoverSeriesViewModel
         private val _state = MutableStateFlow(DiscoverSeriesState())
         val state: StateFlow<DiscoverSeriesState> = _state
 
+        val releaseCompanionEnabled = releaseCompanionFeature.enabled
+        private val releaseController =
+            releaseCompanionFeature.repository?.let {
+                ReleaseAcquisitionController(repository = it, scope = viewModelScope)
+            }
+        private val disabledReleaseState =
+            MutableStateFlow<ReleaseWorkflowState>(ReleaseWorkflowState.Idle)
+        val releaseState: StateFlow<ReleaseWorkflowState> =
+            releaseController?.state ?: disabledReleaseState
+
+        private val _releaseSubject = MutableStateFlow(restoredReleaseSubject())
+        val releaseSubject: StateFlow<ReleaseSubject?> = _releaseSubject
+        private var libraryChangesJob: Job? = null
+
         val userConfig = seerrServerRepository.current.map { it?.config }
         val request4kEnabled =
             seerrServerRepository.current
@@ -79,6 +109,13 @@ class DiscoverSeriesViewModel
 
         init {
             init()
+            viewModelScope.launch {
+                releaseState.collectLatest { workflow ->
+                    if (workflow is ReleaseWorkflowState.Available) {
+                        fetchAndSetItem().await()
+                    }
+                }
+            }
         }
 
         private fun fetchAndSetItem(): Deferred<TvDetails?> =
@@ -95,7 +132,143 @@ class DiscoverSeriesViewModel
                 }
             }
 
-        fun init(): Job =
+        /** Rehydrates a previously selected season/episode after lifecycle or process recreation. */
+        fun onVisible() {
+            val subject = _releaseSubject.value
+            if (subject != null) {
+                releaseController?.resumeAfterLifecycle(subject)
+            } else {
+                resumeLatestSeries()
+            }
+            libraryChangesJob?.cancel()
+            libraryChangesJob =
+                releaseController?.let { controller ->
+                    viewModelScope.launch {
+                        libraryChangedNotifier.events.collect {
+                            val tracking = releaseState.value as? ReleaseWorkflowState.Tracking
+                            if (
+                                tracking?.acquisition?.phase in
+                                setOf(
+                                    AcquisitionPhase.IMPORTING,
+                                    AcquisitionPhase.IMPORTED,
+                                    AcquisitionPhase.WAITING_JELLYFIN,
+                                )
+                            ) {
+                                _releaseSubject.value?.let(controller::resume)
+                            }
+                        }
+                    }
+                }
+        }
+
+        fun onHidden() {
+            libraryChangesJob?.cancel()
+            libraryChangesJob = null
+            releaseController?.stopPolling()
+        }
+
+        fun searchSeasonReleases(seasonNumber: Int) {
+            val subject =
+                ReleaseSubject.TvSeason(
+                    tmdbId = item.id,
+                    seasonNumber = seasonNumber,
+                    tvdbId = currentTvdbId(),
+                )
+            rememberReleaseSubject(subject)
+            releaseController?.search(subject)
+        }
+
+        fun loadEpisodesForSelectedSeason() {
+            val subject = _releaseSubject.value as? ReleaseSubject.TvSeason ?: return
+            viewModelScope.launchIO {
+                _state.update { it.copy(episodePicker = DataLoadingState.Loading) }
+                try {
+                    val season =
+                        seerrService.api.tvApi.tvTvIdSeasonSeasonNumberGet(
+                            tvId = item.id,
+                            seasonNumber = subject.seasonNumber,
+                        )
+                    _state.update { it.copy(episodePicker = DataLoadingState.Success(season)) }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (failure: Exception) {
+                    Timber.e(failure, "Error loading episodes for %s season %s", item.id, subject.seasonNumber)
+                    _state.update { it.copy(episodePicker = DataLoadingState.Error(failure)) }
+                }
+            }
+        }
+
+        fun searchEpisodeReleases(episodeNumber: Int) {
+            val selected = _releaseSubject.value ?: return
+            val seasonNumber = selected.seasonNumberOrNull() ?: return
+            val subject =
+                ReleaseSubject.TvEpisode(
+                    tmdbId = item.id,
+                    seasonNumber = seasonNumber,
+                    episodeNumber = episodeNumber,
+                    tvdbId = currentTvdbId(),
+                )
+            rememberReleaseSubject(subject)
+            releaseController?.search(subject)
+        }
+
+        fun retryReleaseSearch() {
+            val subject = _releaseSubject.value
+            if (subject != null) {
+                releaseController?.retry(subject)
+            } else {
+                resumeLatestSeries()
+            }
+        }
+
+        fun confirmRelease(release: ReleaseCandidate) {
+            val subject = _releaseSubject.value ?: return
+            if (!release.matchesSubject(subject)) return
+            releaseController?.confirm(subject, release)
+        }
+
+        fun openCompanionSeries() {
+            val available = releaseState.value as? ReleaseWorkflowState.Available ?: return
+            available.acquisition.jellyfinUuid?.let { jellyfinId ->
+                navigationManager.navigateTo(
+                    Destination.MediaItem(
+                        itemId = jellyfinId,
+                        type = BaseItemKind.SERIES,
+                    ),
+                )
+            }
+        }
+
+        private fun rememberReleaseSubject(subject: ReleaseSubject) {
+            _releaseSubject.value = subject
+            savedStateHandle[RELEASE_SEASON_KEY] = subject.seasonNumberOrNull()
+            savedStateHandle[RELEASE_EPISODE_KEY] =
+                (subject as? ReleaseSubject.TvEpisode)?.episodeNumber
+        }
+
+        private fun resumeLatestSeries() {
+            releaseController?.resumeLatestSeries(
+                tmdbId = item.id,
+                onSubjectResolved = ::rememberReleaseSubject,
+            )
+        }
+
+        private fun restoredReleaseSubject(): ReleaseSubject? {
+            val seasonNumber = savedStateHandle.get<Int>(RELEASE_SEASON_KEY) ?: return null
+            val episodeNumber = savedStateHandle.get<Int>(RELEASE_EPISODE_KEY)
+            return if (episodeNumber == null) {
+                ReleaseSubject.TvSeason(item.id, seasonNumber)
+            } else {
+                ReleaseSubject.TvEpisode(item.id, seasonNumber, episodeNumber)
+            }
+        }
+
+        private fun currentTvdbId(): Int? =
+            state.value.tvSeries.successValue?.let { tv ->
+                tv.mediaInfo?.tvdbId ?: tv.externalIds?.tvdbid
+            }
+
+        private fun init(): Job =
             viewModelScope.launchIO {
                 Timber.v("Init for tv %s", item.id)
                 try {
@@ -426,4 +599,8 @@ data class DiscoverSeriesState(
     val canCancelRequest: Boolean = false,
     val profileLoading: LoadingState = LoadingState.Pending,
     val requestData: SeerrRequestData = SeerrRequestData(),
+    val episodePicker: DataLoadingState<Season> = DataLoadingState.Pending,
 )
+
+private const val RELEASE_SEASON_KEY = "release_season"
+private const val RELEASE_EPISODE_KEY = "release_episode"

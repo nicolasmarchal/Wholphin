@@ -89,6 +89,39 @@ class ReleaseCompanionRepositoryTest {
         }
 
     @Test
+    fun `series rehydration selects latest TV job and rejects movie namespace collisions`() =
+        runTest {
+            val api = FakeCompanionApi()
+            api.seriesAcquisitions =
+                listOf(
+                    acquisition(
+                        subject = ReleaseSubject.Movie(20),
+                        updatedAt = "2026-10-03T12:05:00Z",
+                    ),
+                    acquisition(
+                        subject = ReleaseSubject.TvEpisode(20, 3, 1),
+                        state = "cancelled",
+                        updatedAt = "2026-10-03T12:07:00Z",
+                    ),
+                    acquisition(
+                        subject = ReleaseSubject.TvSeason(20, 2, tvdbId = 99),
+                        updatedAt = "2026-10-03T12:04:00Z",
+                    ),
+                    acquisition(
+                        subject = ReleaseSubject.TvEpisode(21, 1, 1),
+                        updatedAt = "2026-10-03T12:06:00Z",
+                    ),
+                )
+            val repository = repository(api) { credential() }
+
+            val result = repository.rehydrateLatestSeries(20)
+
+            assertEquals(ReleaseSubjectKind.TV_SEASON, result?.subject?.kind)
+            assertEquals(20, api.lastSeriesTmdbId)
+            assertEquals(true, api.lastSeriesActiveFilter)
+        }
+
+    @Test
     fun `valid BFF session is cached only in memory`() =
         runTest {
             val api = FakeCompanionApi()
@@ -157,8 +190,11 @@ private class FakeCompanionApi : ReleaseCompanionApi {
     }
     var acquire: suspend (String, SensitiveValue) -> AcquisitionJobDto = { _, _ -> acquisition() }
     var acquisitions: List<AcquisitionJobDto> = emptyList()
+    var seriesAcquisitions: List<AcquisitionJobDto> = emptyList()
     var lastListedSubject: ReleaseSubject? = null
     var lastActiveFilter: Boolean? = null
+    var lastSeriesTmdbId: Int? = null
+    var lastSeriesActiveFilter: Boolean? = null
 
     override suspend fun exchangeSession(jellyfinToken: SensitiveValue): AuthenticatedCompanionSession {
         exchangeCount += 1
@@ -171,8 +207,7 @@ private class FakeCompanionApi : ReleaseCompanionApi {
 
     override suspend fun revokeSession(sessionToken: SensitiveValue) = Unit
 
-    override suspend fun getCapabilities(sessionToken: SensitiveValue): CompanionCapabilitiesDto =
-        capabilities(sessionToken)
+    override suspend fun getCapabilities(sessionToken: SensitiveValue): CompanionCapabilitiesDto = capabilities(sessionToken)
 
     override suspend fun startReleaseSearch(
         sessionToken: SensitiveValue,
@@ -204,6 +239,16 @@ private class FakeCompanionApi : ReleaseCompanionApi {
         lastListedSubject = subject
         lastActiveFilter = active
         return acquisitions
+    }
+
+    override suspend fun listSeriesAcquisitions(
+        sessionToken: SensitiveValue,
+        tmdbId: Int,
+        active: Boolean?,
+    ): List<AcquisitionJobDto> {
+        lastSeriesTmdbId = tmdbId
+        lastSeriesActiveFilter = active
+        return seriesAcquisitions
     }
 
     override suspend fun getAcquisition(

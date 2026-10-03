@@ -87,8 +87,7 @@ data class BoundedPollingPolicy(
         require(maximumElapsedMillis > 0)
     }
 
-    internal fun nextDelay(current: Long): Long =
-        min(maximumDelayMillis.toDouble(), current * multiplier).toLong()
+    internal fun nextDelay(current: Long): Long = min(maximumDelayMillis.toDouble(), current * multiplier).toLong()
 
     companion object {
         val Search =
@@ -149,6 +148,7 @@ class ReleaseAcquisitionController(
 
     private var operation: Job? = null
     private var confirmingFingerprint: String? = null
+    private var lastSelection: Selection? = null
 
     val state: StateFlow<ReleaseWorkflowState> = stateFlow.asStateFlow()
 
@@ -166,6 +166,154 @@ class ReleaseAcquisitionController(
                 throw cancellation
             } catch (failure: ReleaseCompanionException) {
                 fail(subject, ReleaseOperationStage.REHYDRATION, failure)
+            }
+        }
+    }
+
+    /** Resumes only the operation that was interrupted by leaving the screen. */
+    fun resumeAfterLifecycle(subject: ReleaseSubject) {
+        when (val current = stateFlow.value) {
+            ReleaseWorkflowState.Idle,
+            is ReleaseWorkflowState.Ready,
+            is ReleaseWorkflowState.Rehydrating,
+            is ReleaseWorkflowState.Tracking,
+            -> {
+                resume(subject)
+            }
+
+            is ReleaseWorkflowState.Searching -> {
+                val latest = current.latest
+                if (latest == null) {
+                    search(subject)
+                } else {
+                    launchReplacing {
+                        try {
+                            followSearch(subject, latest)
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (_: ReleaseCompanionException.SelectionExpired) {
+                            stateFlow.value = ReleaseWorkflowState.SearchExpired(subject)
+                        } catch (failure: ReleaseCompanionException) {
+                            fail(
+                                subject = subject,
+                                stage = ReleaseOperationStage.SEARCH,
+                                failure = failure,
+                                lastSearch = latest,
+                            )
+                        }
+                    }
+                }
+            }
+
+            is ReleaseWorkflowState.Submitting -> {
+                val fingerprint = current.release.selectionToken.redactedFingerprint()
+                val wasAccepted = synchronized(operationLock) { fingerprint in acceptedSelections }
+                if (wasAccepted) {
+                    resume(subject)
+                } else {
+                    confirm(subject, current.release)
+                }
+            }
+
+            is ReleaseWorkflowState.Available,
+            is ReleaseWorkflowState.Cancelled,
+            is ReleaseWorkflowState.Empty,
+            is ReleaseWorkflowState.Failed,
+            is ReleaseWorkflowState.Results,
+            is ReleaseWorkflowState.SearchExpired,
+            -> {}
+        }
+    }
+
+    /** Retries without changing an uncertain exact selection into a different release. */
+    fun retry(subject: ReleaseSubject) {
+        when (val current = stateFlow.value) {
+            is ReleaseWorkflowState.Failed -> {
+                when {
+                    current.stage == ReleaseOperationStage.SELECTION &&
+                        current.error !is ReleaseCompanionException.SelectionRejected -> {
+                        val selection = synchronized(operationLock) { lastSelection }
+                        if (selection?.subject == subject) {
+                            confirm(subject, selection.release)
+                        } else {
+                            recoverOrSearch(subject)
+                        }
+                    }
+
+                    current.lastAcquisition != null &&
+                        current.lastAcquisition.phase != AcquisitionPhase.ERROR -> {
+                        resume(subject)
+                    }
+
+                    current.stage == ReleaseOperationStage.REHYDRATION -> {
+                        recoverOrSearch(subject)
+                    }
+
+                    else -> {
+                        search(subject)
+                    }
+                }
+            }
+
+            is ReleaseWorkflowState.Tracking,
+            is ReleaseWorkflowState.Submitting,
+            is ReleaseWorkflowState.Rehydrating,
+            -> {
+                resumeAfterLifecycle(subject)
+            }
+
+            else -> {
+                search(subject)
+            }
+        }
+    }
+
+    /**
+     * Restores the newest season or episode job for a series when process state no longer contains
+     * the exact subject. The BFF remains authoritative and filters jobs to the current user.
+     *
+     * [fallbackSubject] is used only to represent loading/no-result/error in the existing UI state;
+     * a recovered job always replaces it with its exact server-provided subject.
+     */
+    fun resumeLatestSeries(
+        tmdbId: Int,
+        fallbackSubject: ReleaseSubject.TvSeason = ReleaseSubject.TvSeason(tmdbId, seasonNumber = 0),
+        onSubjectResolved: (ReleaseSubject) -> Unit = {},
+    ) {
+        require(tmdbId > 0) { "tmdbId must be positive" }
+        require(fallbackSubject.tmdbId == tmdbId) { "fallback subject must identify the same series" }
+        launchReplacing {
+            stateFlow.value = ReleaseWorkflowState.Rehydrating(fallbackSubject)
+            try {
+                val acquisition = repository.rehydrateLatestSeries(tmdbId)
+                if (acquisition == null) {
+                    stateFlow.value = ReleaseWorkflowState.Ready(fallbackSubject)
+                    return@launchReplacing
+                }
+                val resolved = acquisition.subject.toDomain()
+                if (
+                    resolved.tmdbId != tmdbId ||
+                    resolved is ReleaseSubject.Movie
+                ) {
+                    throw ReleaseCompanionException.InvalidResponse(
+                        "Companion returned a non-series acquisition for series rehydration",
+                    )
+                }
+                onSubjectResolved(resolved)
+                followAcquisition(resolved, acquisition)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: ReleaseCompanionException) {
+                fail(fallbackSubject, ReleaseOperationStage.REHYDRATION, failure)
+            } catch (failure: IllegalArgumentException) {
+                fail(
+                    fallbackSubject,
+                    ReleaseOperationStage.REHYDRATION,
+                    ReleaseCompanionException.InvalidResponse(
+                        "Companion returned an invalid series acquisition subject",
+                        failure,
+                    ),
+                )
             }
         }
     }
@@ -196,6 +344,7 @@ class ReleaseAcquisitionController(
             if (fingerprint in acceptedSelections || confirmingFingerprint == fingerprint) return
             operation?.cancel()
             confirmingFingerprint = fingerprint
+            lastSelection = Selection(subject, release)
             val idempotencyKey =
                 idempotencyKeys.getOrPut(fingerprint) { idempotencyKeyFactory.create() }
             operation =
@@ -318,7 +467,9 @@ class ReleaseAcquisitionController(
 
                 ReleaseSearchPhase.PENDING,
                 ReleaseSearchPhase.RUNNING,
-                -> stateFlow.value = ReleaseWorkflowState.Searching(subject, latest)
+                -> {
+                    stateFlow.value = ReleaseWorkflowState.Searching(subject, latest)
+                }
             }
             if (pollingExhausted(searchPolicy, startedAt, attempts)) {
                 fail(
@@ -356,9 +507,47 @@ class ReleaseAcquisitionController(
                 return
             }
             pollDelay.await(delayMillis)
-            latest = repository.getAcquisition(latest.id)
+            latest =
+                try {
+                    repository.getAcquisition(latest.id)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (failure: ReleaseCompanionException) {
+                    fail(
+                        subject = subject,
+                        stage = ReleaseOperationStage.TRACKING,
+                        failure = failure,
+                        lastAcquisition = latest,
+                    )
+                    return
+                }
             attempts += 1
             delayMillis = acquisitionPolicy.nextDelay(delayMillis)
+        }
+    }
+
+    private fun recoverOrSearch(subject: ReleaseSubject) {
+        launchReplacing {
+            stateFlow.value = ReleaseWorkflowState.Rehydrating(subject)
+            try {
+                val acquisition = repository.rehydrate(subject)
+                if (
+                    acquisition != null &&
+                    acquisition.phase != AcquisitionPhase.ERROR &&
+                    acquisition.phase != AcquisitionPhase.CANCELLED
+                ) {
+                    followAcquisition(subject, acquisition)
+                } else {
+                    stateFlow.value = ReleaseWorkflowState.Searching(subject)
+                    followSearch(subject, repository.startSearch(subject))
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: ReleaseCompanionException.SelectionExpired) {
+                stateFlow.value = ReleaseWorkflowState.SearchExpired(subject)
+            } catch (failure: ReleaseCompanionException) {
+                fail(subject, ReleaseOperationStage.REHYDRATION, failure)
+            }
         }
     }
 
@@ -428,8 +617,8 @@ class ReleaseAcquisitionController(
         }
         val expiresAt =
             release.expiresAtInstant()
-                ?: throw ReleaseCompanionException.InvalidResponse(
-                    "Release selection has an invalid expiration timestamp",
+                ?: throw ReleaseCompanionException.SelectionExpired(
+                    "invalid_release_expiration",
                 )
         if (!expiresAt.isAfter(wallClock.now())) {
             throw ReleaseCompanionException.SelectionExpired("release_token_expired")
@@ -470,6 +659,11 @@ class ReleaseAcquisitionController(
             else -> null
         }
 }
+
+private data class Selection(
+    val subject: ReleaseSubject,
+    val release: ReleaseCandidate,
+)
 
 private fun CompanionErrorDto?.toOperationFailure(): ReleaseCompanionException.RemoteOperationFailed =
     ReleaseCompanionException.RemoteOperationFailed(

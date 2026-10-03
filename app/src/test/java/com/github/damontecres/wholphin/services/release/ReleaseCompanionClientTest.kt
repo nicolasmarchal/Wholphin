@@ -112,10 +112,12 @@ class ReleaseCompanionClientTest {
             val api = DefaultReleaseCompanionApi(FakeReleaseTransport(response(202, body)))
 
             val result =
-                api.startReleaseSearch(
-                    SensitiveValue.of("bff-secret"),
-                    ReleaseSubject.TvSeason(9, 2, 19),
-                ).releases.single()
+                api
+                    .startReleaseSearch(
+                        SensitiveValue.of("bff-secret"),
+                        ReleaseSubject.TvSeason(9, 2, 19),
+                    ).releases
+                    .single()
 
             assertEquals("Show.S02.2160p", result.title)
             assertEquals(9_000_000_000, result.sizeBytes)
@@ -162,6 +164,24 @@ class ReleaseCompanionClientTest {
                     "episodeNumber" to "5",
                 ),
                 transport.requests[2].query,
+            )
+        }
+
+    @Test
+    fun `series rehydration queries the TV namespace without guessing a season`() =
+        runTest {
+            val transport = FakeReleaseTransport(response(200, "[]"))
+            val api = DefaultReleaseCompanionApi(transport)
+
+            api.listSeriesAcquisitions(
+                sessionToken = SensitiveValue.of("bff-secret"),
+                tmdbId = 123,
+                active = false,
+            )
+
+            assertEquals(
+                mapOf("active" to "false", "mediaType" to "tv", "tmdbId" to "123"),
+                transport.requests.single().query,
             )
         }
 

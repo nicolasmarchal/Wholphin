@@ -38,6 +38,8 @@ fun ExpandableDiscoverButtons(
     buttonOnFocusChanged: (FocusState) -> Unit,
     modifier: Modifier = Modifier,
     pendingOnClick: () -> Unit = {},
+    primaryAction: DiscoverPrimaryAction? = null,
+    partialRequestAction: DiscoverPrimaryAction? = null,
 ) {
     val firstFocus = remember { FocusRequester() }
     LazyRow(
@@ -49,7 +51,7 @@ fun ExpandableDiscoverButtons(
                 .focusRestorer(firstFocus),
     ) {
         val text =
-            when (availability) {
+            primaryAction?.title ?: when (availability) {
                 SeerrAvailability.UNKNOWN -> R.string.request
 
                 SeerrAvailability.PENDING,
@@ -67,7 +69,7 @@ fun ExpandableDiscoverButtons(
                 SeerrAvailability.BLOCKLISTED -> R.string.unavailable
             }
         val icon =
-            when (availability) {
+            primaryAction?.icon ?: when (availability) {
                 SeerrAvailability.UNKNOWN -> R.string.fa_download
 
                 SeerrAvailability.PENDING,
@@ -88,7 +90,7 @@ fun ExpandableDiscoverButtons(
                 title = text,
                 iconStringRes = icon,
                 enabled =
-                    when (availability) {
+                    primaryAction?.enabled ?: when (availability) {
                         SeerrAvailability.UNKNOWN -> canRequest
 
                         SeerrAvailability.PENDING,
@@ -102,27 +104,31 @@ fun ExpandableDiscoverButtons(
                         -> false
                     },
                 onClick = {
-                    when (availability) {
-                        SeerrAvailability.UNKNOWN -> {
-                            requestOnClick.invoke()
-                        }
+                    if (primaryAction != null) {
+                        primaryAction.onClick()
+                    } else {
+                        when (availability) {
+                            SeerrAvailability.UNKNOWN -> {
+                                requestOnClick.invoke()
+                            }
 
-                        SeerrAvailability.PENDING,
-                        SeerrAvailability.PROCESSING,
-                        -> {
-                            pendingOnClick.invoke()
-                        }
+                            SeerrAvailability.PENDING,
+                            SeerrAvailability.PROCESSING,
+                            -> {
+                                pendingOnClick.invoke()
+                            }
 
-                        SeerrAvailability.PARTIALLY_AVAILABLE,
-                        SeerrAvailability.AVAILABLE,
-                        -> {
-                            goToOnClick.invoke()
-                        }
+                            SeerrAvailability.PARTIALLY_AVAILABLE,
+                            SeerrAvailability.AVAILABLE,
+                            -> {
+                                goToOnClick.invoke()
+                            }
 
-                        SeerrAvailability.DELETED,
-                        SeerrAvailability.BLOCKLISTED,
-                        -> {
-                            // TODO
+                            SeerrAvailability.DELETED,
+                            SeerrAvailability.BLOCKLISTED,
+                            -> {
+                                // TODO
+                            }
                         }
                     }
                 },
@@ -135,12 +141,12 @@ fun ExpandableDiscoverButtons(
         if (availability == SeerrAvailability.PARTIALLY_AVAILABLE) {
             item("request_partial") {
                 ExpandableFaButton(
-                    title = R.string.request,
-                    iconStringRes = R.string.fa_download,
+                    title = partialRequestAction?.title ?: R.string.request,
+                    iconStringRes = partialRequestAction?.icon ?: R.string.fa_download,
                     onClick = {
-                        requestOnClick.invoke()
+                        partialRequestAction?.onClick?.invoke() ?: requestOnClick.invoke()
                     },
-                    enabled = availability == SeerrAvailability.PARTIALLY_AVAILABLE,
+                    enabled = partialRequestAction?.enabled ?: true,
                     modifier =
                         Modifier
                             .onFocusChanged(buttonOnFocusChanged),

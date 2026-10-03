@@ -18,10 +18,17 @@ import com.github.damontecres.wholphin.data.model.SeerrPermission
 import com.github.damontecres.wholphin.data.model.Trailer
 import com.github.damontecres.wholphin.data.model.hasPermission
 import com.github.damontecres.wholphin.services.BackdropService
+import com.github.damontecres.wholphin.services.LibraryChangedNotifier
 import com.github.damontecres.wholphin.services.NavigationManager
+import com.github.damontecres.wholphin.services.ReleaseCompanionFeature
 import com.github.damontecres.wholphin.services.SeerrServerRepository
 import com.github.damontecres.wholphin.services.SeerrService
 import com.github.damontecres.wholphin.services.SeerrUserConfig
+import com.github.damontecres.wholphin.services.release.AcquisitionPhase
+import com.github.damontecres.wholphin.services.release.ReleaseAcquisitionController
+import com.github.damontecres.wholphin.services.release.ReleaseCandidate
+import com.github.damontecres.wholphin.services.release.ReleaseSubject
+import com.github.damontecres.wholphin.services.release.ReleaseWorkflowState
 import com.github.damontecres.wholphin.ui.equalsNotNull
 import com.github.damontecres.wholphin.ui.isNotNullOrBlank
 import com.github.damontecres.wholphin.ui.launchDefault
@@ -42,9 +49,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.model.api.BaseItemKind
 import timber.log.Timber
@@ -61,6 +70,8 @@ class DiscoverMovieViewModel
         val serverRepository: ServerRepository,
         val seerrService: SeerrService,
         private val seerrServerRepository: SeerrServerRepository,
+        releaseCompanionFeature: ReleaseCompanionFeature,
+        private val libraryChangedNotifier: LibraryChangedNotifier,
         @Assisted val item: DiscoverItem,
     ) : ViewModel() {
         @AssistedFactory
@@ -71,12 +82,32 @@ class DiscoverMovieViewModel
         private val _state = MutableStateFlow(DiscoverMovieState())
         val state: StateFlow<DiscoverMovieState> = _state
 
+        val releaseCompanionEnabled = releaseCompanionFeature.enabled
+        private val releaseSubject = ReleaseSubject.Movie(item.id)
+        private val releaseController =
+            releaseCompanionFeature.repository?.let {
+                ReleaseAcquisitionController(repository = it, scope = viewModelScope)
+            }
+        private val disabledReleaseState =
+            MutableStateFlow<ReleaseWorkflowState>(ReleaseWorkflowState.Idle)
+        val releaseState: StateFlow<ReleaseWorkflowState> =
+            releaseController?.state ?: disabledReleaseState
+
+        private var libraryChangesJob: Job? = null
+
         val userConfig = seerrServerRepository.current.map { it?.config }
         val request4kEnabled =
             seerrServerRepository.current.map { it?.request4kMovieEnabled ?: false }
 
         init {
             init()
+            viewModelScope.launch {
+                releaseState.collectLatest { releaseState ->
+                    if (releaseState is ReleaseWorkflowState.Available) {
+                        fetchAndSetItem().await()
+                    }
+                }
+            }
         }
 
         private fun fetchAndSetItem(): Deferred<MovieDetails?> =
@@ -93,7 +124,7 @@ class DiscoverMovieViewModel
                 }
             }
 
-        fun init(): Job =
+        private fun init(): Job =
             viewModelScope.launchIO {
                 Timber.v("Init for movie %s", item.id)
                 try {
@@ -158,6 +189,62 @@ class DiscoverMovieViewModel
                     _state.update { it.copy(movie = DataLoadingState.Error(ex)) }
                 }
             }
+
+        /** Rehydrates the canonical BFF state whenever this detail page becomes visible. */
+        fun onVisible() {
+            // Preserve the existing Seerr foreground refresh in addition to BFF rehydration.
+            init()
+            releaseController?.resumeAfterLifecycle(releaseSubject)
+            libraryChangesJob?.cancel()
+            libraryChangesJob =
+                releaseController?.let { controller ->
+                    viewModelScope.launch {
+                        libraryChangedNotifier.events.collect {
+                            val tracking = releaseState.value as? ReleaseWorkflowState.Tracking
+                            if (
+                                tracking?.acquisition?.phase in
+                                setOf(
+                                    AcquisitionPhase.IMPORTING,
+                                    AcquisitionPhase.IMPORTED,
+                                    AcquisitionPhase.WAITING_JELLYFIN,
+                                )
+                            ) {
+                                controller.resume(releaseSubject)
+                            }
+                        }
+                    }
+                }
+        }
+
+        fun onHidden() {
+            libraryChangesJob?.cancel()
+            libraryChangesJob = null
+            releaseController?.stopPolling()
+        }
+
+        fun searchReleases() {
+            releaseController?.search(releaseSubject)
+        }
+
+        fun retryReleaseOperation() {
+            releaseController?.retry(releaseSubject)
+        }
+
+        fun confirmRelease(release: ReleaseCandidate) {
+            releaseController?.confirm(releaseSubject, release)
+        }
+
+        fun openCompanionMedia() {
+            val available = releaseState.value as? ReleaseWorkflowState.Available ?: return
+            available.acquisition.jellyfinUuid?.let { jellyfinId ->
+                navigationManager.navigateTo(
+                    Destination.MediaItem(
+                        itemId = jellyfinId,
+                        type = BaseItemKind.MOVIE,
+                    ),
+                )
+            }
+        }
 
         private suspend fun updateCanCancel() {
             val user = userConfig.firstOrNull()

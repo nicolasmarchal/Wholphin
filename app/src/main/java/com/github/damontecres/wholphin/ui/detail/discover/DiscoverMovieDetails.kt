@@ -48,6 +48,10 @@ import com.github.damontecres.wholphin.data.model.hasPermission
 import com.github.damontecres.wholphin.preferences.UserPreferences
 import com.github.damontecres.wholphin.services.SeerrUserConfig
 import com.github.damontecres.wholphin.services.TrailerService
+import com.github.damontecres.wholphin.services.release.ReleaseCandidate
+import com.github.damontecres.wholphin.services.release.ReleaseSubject
+import com.github.damontecres.wholphin.services.release.ReleaseWorkflowState
+import com.github.damontecres.wholphin.services.release.redactedFingerprint
 import com.github.damontecres.wholphin.ui.Cards
 import com.github.damontecres.wholphin.ui.cards.DiscoverItemCard
 import com.github.damontecres.wholphin.ui.cards.DiscoverPersonRow
@@ -79,18 +83,26 @@ fun DiscoverMovieDetails(
     val resources = LocalResources.current
     val context = LocalContext.current
     LifecycleResumeEffect(Unit) {
-        viewModel.init()
-        onPauseOrDispose { }
+        viewModel.onVisible()
+        onPauseOrDispose { viewModel.onHidden() }
     }
     val state by viewModel.state.collectAsState()
+    val releaseState by viewModel.releaseState.collectAsState()
     val userConfig by viewModel.userConfig.collectAsState(null)
     val request4kEnabled by viewModel.request4kEnabled.collectAsState(false)
 
     var overviewDialog by remember { mutableStateOf<ItemDetailsDialogInfo?>(null) }
     var showRequestDialog by remember { mutableStateOf(false) }
+    var showReleaseDialog by remember { mutableStateOf(false) }
+    var releaseToConfirm by remember { mutableStateOf<ReleaseCandidate?>(null) }
+    var restoreSelectionFingerprint by remember { mutableStateOf<String?>(null) }
 
-    val requestStr = stringResource(R.string.request)
-    val request4kStr = stringResource(R.string.request_4k)
+    LaunchedEffect(releaseState) {
+        if (releaseState is ReleaseWorkflowState.Available) {
+            showReleaseDialog = false
+            releaseToConfirm = null
+        }
+    }
 
     when (val st = state.movie) {
         is DataLoadingState.Error -> {
@@ -105,6 +117,49 @@ fun DiscoverMovieDetails(
 
         is DataLoadingState.Success<MovieDetails> -> {
             val movie = st.data
+            val availability =
+                SeerrAvailability.from(movie.mediaInfo?.status) ?: SeerrAvailability.UNKNOWN
+            val primaryAction =
+                if (shouldUseCompanionAction(viewModel.releaseCompanionEnabled, availability, releaseState)) {
+                    DiscoverPrimaryAction(
+                        title = releasePrimaryTitle(releaseState, series = false),
+                        icon =
+                            when (releaseState) {
+                                is ReleaseWorkflowState.Available -> R.string.fa_play
+
+                                is ReleaseWorkflowState.Rehydrating,
+                                is ReleaseWorkflowState.Submitting,
+                                is ReleaseWorkflowState.Tracking,
+                                -> R.string.fa_clock
+
+                                else -> R.string.fa_download
+                            },
+                        onClick = {
+                            when (releaseState) {
+                                is ReleaseWorkflowState.Available -> {
+                                    viewModel.openCompanionMedia()
+                                }
+
+                                ReleaseWorkflowState.Idle,
+                                is ReleaseWorkflowState.Ready,
+                                -> {
+                                    viewModel.searchReleases()
+                                    showReleaseDialog = true
+                                }
+
+                                is ReleaseWorkflowState.Rehydrating -> {
+                                    showReleaseDialog = true
+                                }
+
+                                else -> {
+                                    showReleaseDialog = true
+                                }
+                            }
+                        },
+                    )
+                } else {
+                    null
+                }
             DiscoverMovieDetailsContent(
                 preferences = preferences,
                 movie = movie,
@@ -147,6 +202,8 @@ fun DiscoverMovieDetails(
                 trailerOnClick = {
                     TrailerService.onClick(context, it, viewModel::navigateTo)
                 },
+                primaryAction = primaryAction,
+                releaseState = releaseState,
                 modifier = modifier,
             )
             if (showRequestDialog) {
@@ -160,6 +217,36 @@ fun DiscoverMovieDetails(
                         showRequestDialog = false
                     },
                     onDismissRequest = { showRequestDialog = false },
+                )
+            }
+            if (showReleaseDialog && releaseToConfirm == null) {
+                ReleaseWorkflowDialog(
+                    state = releaseState,
+                    subject = ReleaseSubject.Movie(movie.id ?: destination.item.id),
+                    canFallback = userConfig.hasPermission(SeerrPermission.REQUEST),
+                    restoreSelectionFingerprint = restoreSelectionFingerprint,
+                    onDismissRequest = { showReleaseDialog = false },
+                    onRetry = viewModel::retryReleaseOperation,
+                    onSelect = { release ->
+                        restoreSelectionFingerprint = release.selectionToken.redactedFingerprint()
+                        releaseToConfirm = release
+                    },
+                    onFallback = {
+                        showReleaseDialog = false
+                        viewModel.requestOnClick()
+                        showRequestDialog = true
+                    },
+                )
+            }
+            releaseToConfirm?.let { release ->
+                ReleaseConfirmationDialog(
+                    release = release,
+                    onCancel = { releaseToConfirm = null },
+                    onDownload = {
+                        releaseToConfirm = null
+                        viewModel.confirmRelease(release)
+                        showReleaseDialog = true
+                    },
                 )
             }
         }
@@ -202,6 +289,8 @@ fun DiscoverMovieDetailsContent(
     onLongClickPerson: (Int, DiscoverItem) -> Unit,
     onLongClickSimilar: (Int, DiscoverItem) -> Unit,
     modifier: Modifier = Modifier,
+    primaryAction: DiscoverPrimaryAction? = null,
+    releaseState: ReleaseWorkflowState = ReleaseWorkflowState.Idle,
 ) {
     val scope = rememberCoroutineScope()
     var position by rememberInt(0)
@@ -257,11 +346,16 @@ fun DiscoverMovieDetailsContent(
                         canCancel = canCancel,
                         trailers = trailers,
                         trailerOnClick = trailerOnClick,
+                        primaryAction = primaryAction,
                         modifier =
                             Modifier
                                 .fillMaxWidth()
                                 .padding(bottom = 16.dp)
                                 .focusRequester(focusRequesters[HEADER_ROW]),
+                    )
+                    ReleaseCompactStatus(
+                        state = releaseState,
+                        modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 12.dp),
                     )
                 }
             }

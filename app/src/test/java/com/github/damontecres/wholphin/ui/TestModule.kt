@@ -25,6 +25,7 @@ import com.github.damontecres.wholphin.data.ServerPreferencesDao
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.preferences.AppPreferencesSerializer
+import com.github.damontecres.wholphin.services.ReleaseCompanionFeature
 import com.github.damontecres.wholphin.services.SeerrApi
 import com.github.damontecres.wholphin.services.hilt.AppModule
 import com.github.damontecres.wholphin.services.hilt.AuthOkHttpClient
@@ -201,6 +202,10 @@ object TestModule {
     fun seerrApi(
         @StandardOkHttpClient okHttpClient: OkHttpClient,
     ): SeerrApi = mockk()
+
+    @Provides
+    @Singleton
+    fun releaseCompanionFeature(): ReleaseCompanionFeature = ReleaseCompanionFeature.disabled()
 }
 
 @Module

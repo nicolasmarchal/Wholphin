@@ -61,6 +61,16 @@ class ReleaseModelsTest {
     }
 
     @Test
+    fun `Jellyfin compact id is exposed as a UUID`() {
+        val acquisition = acquisition(jellyfinItemId = "00112233445566778899aabbccddeeff")
+
+        assertEquals(
+            "00112233-4455-6677-8899-aabbccddeeff",
+            acquisition.jellyfinUuid?.toString(),
+        )
+    }
+
+    @Test
     fun `server error message is redacted from string representations`() {
         val error = CompanionErrorDto("upstream_error", "magnet-or-passkey", true, "request-1")
 
@@ -73,6 +83,7 @@ internal fun candidate(
     token: String = "opaque-release-token-1234567890123456",
     approved: Boolean = true,
     rejected: Boolean = false,
+    expiresAt: String = "2099-01-01T00:00:00Z",
 ): ReleaseCandidate =
     ReleaseCandidate(
         selectionToken = token,
@@ -85,7 +96,7 @@ internal fun candidate(
         approved = approved,
         rejected = rejected,
         rejectionReasons = if (rejected) listOf("Rejected") else emptyList(),
-        expiresAt = "2099-01-01T00:00:00Z",
+        expiresAt = expiresAt,
     )
 
 internal fun acquisition(
