@@ -52,14 +52,14 @@ class ReleaseWorkflowUiTest {
     @Test
     fun `existing Jellyfin availability keeps classic action unless companion is tracking`() {
         assertFalse(
-            shouldUseCompanionAction(
+            shouldShowCompanionAction(
                 enabled = true,
                 availability = SeerrAvailability.AVAILABLE,
                 state = ReleaseWorkflowState.Ready(ReleaseSubject.Movie(10)),
             ),
         )
         assertTrue(
-            shouldUseCompanionAction(
+            shouldShowCompanionAction(
                 enabled = true,
                 availability = SeerrAvailability.AVAILABLE,
                 state =
@@ -70,17 +70,24 @@ class ReleaseWorkflowUiTest {
             ),
         )
         assertFalse(
-            shouldUseCompanionAction(
+            shouldShowCompanionAction(
                 enabled = false,
                 availability = SeerrAvailability.UNKNOWN,
                 state = ReleaseWorkflowState.Idle,
             ),
         )
         assertFalse(
-            shouldUseCompanionAction(
+            shouldShowCompanionAction(
                 enabled = true,
                 availability = SeerrAvailability.PROCESSING,
                 state = ReleaseWorkflowState.Ready(ReleaseSubject.Movie(10)),
+            ),
+        )
+        assertTrue(
+            shouldShowCompanionAction(
+                enabled = true,
+                availability = SeerrAvailability.PARTIALLY_AVAILABLE,
+                state = ReleaseWorkflowState.Ready(ReleaseSubject.TvSeason(10, 1)),
             ),
         )
     }

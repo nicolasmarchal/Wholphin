@@ -133,8 +133,8 @@ fun DiscoverSeriesDetails(
             val userConfig by viewModel.userConfig.collectAsState(null)
             val availability =
                 SeerrAvailability.from(item.mediaInfo?.status) ?: SeerrAvailability.UNKNOWN
-            val primaryAction =
-                if (shouldUseCompanionAction(viewModel.releaseCompanionEnabled, availability, releaseState)) {
+            val releaseAction =
+                if (shouldShowCompanionAction(viewModel.releaseCompanionEnabled, availability, releaseState)) {
                     DiscoverPrimaryAction(
                         title = releasePrimaryTitle(releaseState, series = true),
                         icon =
@@ -157,31 +157,6 @@ fun DiscoverSeriesDetails(
                                 -> showReleaseSeasonPicker = true
 
                                 is ReleaseWorkflowState.Rehydrating -> showReleaseDialog = true
-
-                                else -> showReleaseDialog = true
-                            }
-                        },
-                    )
-                } else {
-                    null
-                }
-            val partialRequestAction =
-                if (
-                    viewModel.releaseCompanionEnabled &&
-                    availability == SeerrAvailability.PARTIALLY_AVAILABLE &&
-                    releaseState !is ReleaseWorkflowState.Submitting &&
-                    releaseState !is ReleaseWorkflowState.Tracking &&
-                    releaseState !is ReleaseWorkflowState.Rehydrating
-                ) {
-                    DiscoverPrimaryAction(
-                        title = R.string.release_see_releases,
-                        icon = R.string.fa_download,
-                        onClick = {
-                            when (releaseState) {
-                                ReleaseWorkflowState.Idle,
-                                is ReleaseWorkflowState.Ready,
-                                is ReleaseWorkflowState.Available,
-                                -> showReleaseSeasonPicker = true
 
                                 else -> showReleaseDialog = true
                             }
@@ -234,8 +209,7 @@ fun DiscoverSeriesDetails(
                 },
                 onLongClickPerson = { _, _ -> },
                 onLongClickSimilar = { _, _ -> },
-                primaryAction = primaryAction,
-                partialRequestAction = partialRequestAction,
+                releaseAction = releaseAction,
                 releaseState = releaseState,
             )
 
@@ -390,8 +364,7 @@ fun DiscoverSeriesDetailsContent(
     onLongClickPerson: (Int, DiscoverItem) -> Unit,
     onLongClickSimilar: (Int, DiscoverItem) -> Unit,
     modifier: Modifier = Modifier,
-    primaryAction: DiscoverPrimaryAction? = null,
-    partialRequestAction: DiscoverPrimaryAction? = null,
+    releaseAction: DiscoverPrimaryAction? = null,
     releaseState: ReleaseWorkflowState = ReleaseWorkflowState.Idle,
 ) {
     val context = LocalContext.current
@@ -458,8 +431,7 @@ fun DiscoverSeriesDetailsContent(
                             canCancel = canCancel,
                             trailers = trailers,
                             trailerOnClick = trailerOnClick,
-                            primaryAction = primaryAction,
-                            partialRequestAction = partialRequestAction,
+                            releaseAction = releaseAction,
                             modifier =
                                 Modifier
                                     .fillMaxWidth()

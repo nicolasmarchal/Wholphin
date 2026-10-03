@@ -14,6 +14,7 @@ import androidx.compose.ui.focus.FocusState
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.model.SeerrAvailability
@@ -23,6 +24,10 @@ import com.github.damontecres.wholphin.ui.components.ExpandablePlayButton
 import com.github.damontecres.wholphin.ui.components.TrailerButton
 import com.github.damontecres.wholphin.ui.tryRequestFocus
 import kotlin.time.Duration
+
+internal const val DISCOVER_CLASSIC_ACTION_TAG = "discover_classic_action"
+internal const val DISCOVER_RELEASE_ACTION_TAG = "discover_release_action"
+internal const val DISCOVER_PARTIAL_REQUEST_ACTION_TAG = "discover_partial_request_action"
 
 @Composable
 fun ExpandableDiscoverButtons(
@@ -38,8 +43,7 @@ fun ExpandableDiscoverButtons(
     buttonOnFocusChanged: (FocusState) -> Unit,
     modifier: Modifier = Modifier,
     pendingOnClick: () -> Unit = {},
-    primaryAction: DiscoverPrimaryAction? = null,
-    partialRequestAction: DiscoverPrimaryAction? = null,
+    releaseAction: DiscoverPrimaryAction? = null,
 ) {
     val firstFocus = remember { FocusRequester() }
     LazyRow(
@@ -51,7 +55,7 @@ fun ExpandableDiscoverButtons(
                 .focusRestorer(firstFocus),
     ) {
         val text =
-            primaryAction?.title ?: when (availability) {
+            when (availability) {
                 SeerrAvailability.UNKNOWN -> R.string.request
 
                 SeerrAvailability.PENDING,
@@ -69,7 +73,7 @@ fun ExpandableDiscoverButtons(
                 SeerrAvailability.BLOCKLISTED -> R.string.unavailable
             }
         val icon =
-            primaryAction?.icon ?: when (availability) {
+            when (availability) {
                 SeerrAvailability.UNKNOWN -> R.string.fa_download
 
                 SeerrAvailability.PENDING,
@@ -90,7 +94,7 @@ fun ExpandableDiscoverButtons(
                 title = text,
                 iconStringRes = icon,
                 enabled =
-                    primaryAction?.enabled ?: when (availability) {
+                    when (availability) {
                         SeerrAvailability.UNKNOWN -> canRequest
 
                         SeerrAvailability.PENDING,
@@ -104,51 +108,61 @@ fun ExpandableDiscoverButtons(
                         -> false
                     },
                 onClick = {
-                    if (primaryAction != null) {
-                        primaryAction.onClick()
-                    } else {
-                        when (availability) {
-                            SeerrAvailability.UNKNOWN -> {
-                                requestOnClick.invoke()
-                            }
+                    when (availability) {
+                        SeerrAvailability.UNKNOWN -> {
+                            requestOnClick.invoke()
+                        }
 
-                            SeerrAvailability.PENDING,
-                            SeerrAvailability.PROCESSING,
-                            -> {
-                                pendingOnClick.invoke()
-                            }
+                        SeerrAvailability.PENDING,
+                        SeerrAvailability.PROCESSING,
+                        -> {
+                            pendingOnClick.invoke()
+                        }
 
-                            SeerrAvailability.PARTIALLY_AVAILABLE,
-                            SeerrAvailability.AVAILABLE,
-                            -> {
-                                goToOnClick.invoke()
-                            }
+                        SeerrAvailability.PARTIALLY_AVAILABLE,
+                        SeerrAvailability.AVAILABLE,
+                        -> {
+                            goToOnClick.invoke()
+                        }
 
-                            SeerrAvailability.DELETED,
-                            SeerrAvailability.BLOCKLISTED,
-                            -> {
-                                // TODO
-                            }
+                        SeerrAvailability.DELETED,
+                        SeerrAvailability.BLOCKLISTED,
+                        -> {
+                            // TODO
                         }
                     }
                 },
                 modifier =
                     Modifier
+                        .testTag(DISCOVER_CLASSIC_ACTION_TAG)
                         .focusRequester(firstFocus)
                         .onFocusChanged(buttonOnFocusChanged),
             )
         }
+        releaseAction?.let { action ->
+            item("release") {
+                ExpandableFaButton(
+                    title = action.title,
+                    iconStringRes = action.icon,
+                    enabled = action.enabled,
+                    onClick = action.onClick,
+                    modifier =
+                        Modifier
+                            .testTag(DISCOVER_RELEASE_ACTION_TAG)
+                            .onFocusChanged(buttonOnFocusChanged),
+                )
+            }
+        }
         if (availability == SeerrAvailability.PARTIALLY_AVAILABLE) {
             item("request_partial") {
                 ExpandableFaButton(
-                    title = partialRequestAction?.title ?: R.string.request,
-                    iconStringRes = partialRequestAction?.icon ?: R.string.fa_download,
-                    onClick = {
-                        partialRequestAction?.onClick?.invoke() ?: requestOnClick.invoke()
-                    },
-                    enabled = partialRequestAction?.enabled ?: true,
+                    title = R.string.request,
+                    iconStringRes = R.string.fa_download,
+                    onClick = requestOnClick,
+                    enabled = true,
                     modifier =
                         Modifier
+                            .testTag(DISCOVER_PARTIAL_REQUEST_ACTION_TAG)
                             .onFocusChanged(buttonOnFocusChanged),
                 )
             }

@@ -119,8 +119,8 @@ fun DiscoverMovieDetails(
             val movie = st.data
             val availability =
                 SeerrAvailability.from(movie.mediaInfo?.status) ?: SeerrAvailability.UNKNOWN
-            val primaryAction =
-                if (shouldUseCompanionAction(viewModel.releaseCompanionEnabled, availability, releaseState)) {
+            val releaseAction =
+                if (shouldShowCompanionAction(viewModel.releaseCompanionEnabled, availability, releaseState)) {
                     DiscoverPrimaryAction(
                         title = releasePrimaryTitle(releaseState, series = false),
                         icon =
@@ -202,7 +202,7 @@ fun DiscoverMovieDetails(
                 trailerOnClick = {
                     TrailerService.onClick(context, it, viewModel::navigateTo)
                 },
-                primaryAction = primaryAction,
+                releaseAction = releaseAction,
                 releaseState = releaseState,
                 modifier = modifier,
             )
@@ -289,7 +289,7 @@ fun DiscoverMovieDetailsContent(
     onLongClickPerson: (Int, DiscoverItem) -> Unit,
     onLongClickSimilar: (Int, DiscoverItem) -> Unit,
     modifier: Modifier = Modifier,
-    primaryAction: DiscoverPrimaryAction? = null,
+    releaseAction: DiscoverPrimaryAction? = null,
     releaseState: ReleaseWorkflowState = ReleaseWorkflowState.Idle,
 ) {
     val scope = rememberCoroutineScope()
@@ -346,7 +346,7 @@ fun DiscoverMovieDetailsContent(
                         canCancel = canCancel,
                         trailers = trailers,
                         trailerOnClick = trailerOnClick,
-                        primaryAction = primaryAction,
+                        releaseAction = releaseAction,
                         modifier =
                             Modifier
                                 .fillMaxWidth()

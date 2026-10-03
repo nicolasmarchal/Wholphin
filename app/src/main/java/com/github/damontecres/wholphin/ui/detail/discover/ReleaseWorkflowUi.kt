@@ -57,7 +57,7 @@ data class DiscoverPrimaryAction(
     val onClick: () -> Unit,
 )
 
-internal fun shouldUseCompanionAction(
+internal fun shouldShowCompanionAction(
     enabled: Boolean,
     availability: SeerrAvailability,
     state: ReleaseWorkflowState,
@@ -65,6 +65,7 @@ internal fun shouldUseCompanionAction(
     enabled &&
         (
             availability == SeerrAvailability.UNKNOWN ||
+                availability == SeerrAvailability.PARTIALLY_AVAILABLE ||
                 state is ReleaseWorkflowState.Submitting ||
                 state is ReleaseWorkflowState.Tracking ||
                 state is ReleaseWorkflowState.Available ||
