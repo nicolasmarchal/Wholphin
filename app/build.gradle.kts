@@ -50,6 +50,11 @@ val companionAllowCleartext =
         .gradleProperty("wholphin.companion.allowCleartext")
         .orElse(providers.environmentVariable("WHOLPHIN_COMPANION_ALLOW_CLEARTEXT"))
         .orElse("false")
+val companionUseOfficialPackage =
+    providers
+        .gradleProperty("wholphin.companion.officialPackage")
+        .orElse(providers.environmentVariable("WHOLPHIN_COMPANION_OFFICIAL_PACKAGE"))
+        .orElse("false")
 
 // See https://issuetracker.google.com/issues/402800800
 val isBuildingBundle =
@@ -201,7 +206,9 @@ configure<ApplicationExtension> {
         }
         create("companion") {
             dimension = "version"
-            applicationIdSuffix = ".companion"
+            if (!companionUseOfficialPackage.getBoolean("wholphin.companion.officialPackage")) {
+                applicationIdSuffix = ".companion"
+            }
             manifestPlaceholders += mapOf(featureLeanback to true)
             setFeatureFlag(featureUpdate, false)
             setFeatureFlag(featureDiscover, true)
