@@ -101,6 +101,7 @@ robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectr
 multiplatform-markdown-renderer = { module = "com.mikepenz:multiplatform-markdown-renderer", version.ref = "multiplatformMarkdownRenderer" }
 multiplatform-markdown-renderer-m3 = { module = "com.mikepenz:multiplatform-markdown-renderer-m3", version.ref = "multiplatformMarkdownRenderer" }
 okhttp = { module = "com.squareup.okhttp3:okhttp" }
+okhttp-sse = { module = "com.squareup.okhttp3:okhttp-sse" }
 okhttp-bom = { module = "com.squareup.okhttp3:okhttp-bom", version.ref = "okhttpBom" }
 programguide = { module = "io.github.oleksandrbalan:programguide", version.ref = "programguide" }
 protobuf-kotlin-lite = { module = "com.google.protobuf:protobuf-kotlin-lite", version.ref = "protobuf-javalite" }

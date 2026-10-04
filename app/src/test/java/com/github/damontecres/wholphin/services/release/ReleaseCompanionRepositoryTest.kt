@@ -1,5 +1,9 @@
 package com.github.damontecres.wholphin.services.release
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.single
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -55,6 +59,25 @@ class ReleaseCompanionRepositoryTest {
             )
 
             assertEquals(listOf("one-stable-key", "one-stable-key"), observedKeys)
+            assertEquals(2, api.exchangeCount)
+        }
+
+    @Test
+    fun `unauthorized event stream refreshes its in-memory session once`() =
+        runTest {
+            val api = FakeCompanionApi()
+            api.acquisitionEvents = { token, _ ->
+                if (token.reveal() == "session-1") {
+                    flow { throw ReleaseCompanionException.AuthenticationRequired() }
+                } else {
+                    flowOf(acquisition(state = "downloading", progress = 12.0))
+                }
+            }
+            val repository = repository(api) { credential() }
+
+            val update = repository.streamAcquisition("acquisition-1").single()
+
+            assertEquals(12.0, update.progress)
             assertEquals(2, api.exchangeCount)
         }
 
@@ -189,6 +212,9 @@ private class FakeCompanionApi : ReleaseCompanionApi {
         CompanionCapabilitiesDto(false, false)
     }
     var acquire: suspend (String, SensitiveValue) -> AcquisitionJobDto = { _, _ -> acquisition() }
+    var acquisitionEvents: (SensitiveValue, String) -> Flow<AcquisitionJobDto> = { _, _ ->
+        flow { throw ReleaseCompanionException.StreamingUnavailable() }
+    }
     var acquisitions: List<AcquisitionJobDto> = emptyList()
     var seriesAcquisitions: List<AcquisitionJobDto> = emptyList()
     var lastListedSubject: ReleaseSubject? = null
@@ -255,6 +281,11 @@ private class FakeCompanionApi : ReleaseCompanionApi {
         sessionToken: SensitiveValue,
         acquisitionId: String,
     ): AcquisitionJobDto = error("Not needed by this test")
+
+    override fun streamAcquisition(
+        sessionToken: SensitiveValue,
+        acquisitionId: String,
+    ): Flow<AcquisitionJobDto> = acquisitionEvents(sessionToken, acquisitionId)
 
     override suspend fun cancelAcquisition(
         sessionToken: SensitiveValue,

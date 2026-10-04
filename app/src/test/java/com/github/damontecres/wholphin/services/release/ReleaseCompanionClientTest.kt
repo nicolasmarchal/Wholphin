@@ -1,5 +1,9 @@
 package com.github.damontecres.wholphin.services.release
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.single
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -101,6 +105,7 @@ class ReleaseCompanionClientTest {
                     "indexer":"Example Indexer",
                     "approved":false,
                     "rejected":true,
+                    "policyOverrideAllowed":true,
                     "rejections":["Upgrade not allowed"],
                     "fullSeason":true,
                     "seasonNumber":2,
@@ -127,11 +132,12 @@ class ReleaseCompanionClientTest {
             assertEquals("Example Indexer", result.indexer)
             assertFalse(result.approved)
             assertTrue(result.rejected)
+            assertTrue(result.policyOverrideAllowed)
             assertEquals(listOf("Upgrade not allowed"), result.rejectionReasons)
             assertTrue(result.fullSeason)
             assertEquals(2, result.seasonNumber)
             assertEquals(listOf(1, 2, 3), result.episodeNumbers)
-            assertFalse(result.selectable)
+            assertTrue(result.selectable)
         }
 
     @Test
@@ -186,6 +192,37 @@ class ReleaseCompanionClientTest {
         }
 
     @Test
+    fun `acquisition event stream uses the SSE route and decodes canonical snapshots`() =
+        runTest {
+            val transport = FakeReleaseTransport()
+            transport.eventFlow =
+                flowOf(
+                    ReleaseTransportEvent(
+                        id = "17",
+                        type = "acquisition",
+                        data = acquisitionJson("downloading"),
+                    ),
+                )
+            val api = DefaultReleaseCompanionApi(transport)
+
+            val update =
+                api
+                    .streamAcquisition(
+                        sessionToken = SensitiveValue.of("bff-secret"),
+                        acquisitionId = "acquisition-1",
+                    ).single()
+
+            assertEquals("acquisition-1", update.id)
+            assertEquals(AcquisitionPhase.DOWNLOADING, update.phase)
+            val request = transport.streamRequests.single()
+            assertEquals(
+                listOf("v1", "acquisitions", "acquisition-1", "events"),
+                request.pathSegments,
+            )
+            assertEquals("bff-secret", request.bearerToken?.reveal())
+        }
+
+    @Test
     fun `HTTP errors are typed without retaining response text`() =
         runTest {
             val secretBody =
@@ -229,10 +266,18 @@ private class FakeReleaseTransport(
 ) : ReleaseCompanionTransport {
     private val pending = ArrayDeque(responses.toList())
     val requests = mutableListOf<ReleaseTransportRequest>()
+    val streamRequests = mutableListOf<ReleaseTransportRequest>()
+    var eventFlow: Flow<ReleaseTransportEvent> =
+        flow { throw ReleaseCompanionException.StreamingUnavailable() }
 
     override suspend fun execute(request: ReleaseTransportRequest): ReleaseTransportResponse {
         requests += request
         return pending.removeFirst()
+    }
+
+    override fun stream(request: ReleaseTransportRequest): Flow<ReleaseTransportEvent> {
+        streamRequests += request
+        return eventFlow
     }
 }
 

@@ -30,10 +30,17 @@ class ReleaseModelsTest {
     }
 
     @Test
-    fun `release is selectable only when approved and not rejected`() {
+    fun `release is selectable when approved or when a soft policy override is allowed`() {
         assertTrue(candidate(approved = true, rejected = false).selectable)
         assertFalse(candidate(approved = false, rejected = false).selectable)
         assertFalse(candidate(approved = true, rejected = true).selectable)
+        assertTrue(
+            candidate(
+                approved = false,
+                rejected = true,
+                policyOverrideAllowed = true,
+            ).selectable,
+        )
     }
 
     @Test
@@ -83,6 +90,7 @@ internal fun candidate(
     token: String = "opaque-release-token-1234567890123456",
     approved: Boolean = true,
     rejected: Boolean = false,
+    policyOverrideAllowed: Boolean = false,
     expiresAt: String = "2099-01-01T00:00:00Z",
 ): ReleaseCandidate =
     ReleaseCandidate(
@@ -95,6 +103,7 @@ internal fun candidate(
         indexer = "Example Indexer",
         approved = approved,
         rejected = rejected,
+        policyOverrideAllowed = policyOverrideAllowed,
         rejectionReasons = if (rejected) listOf("Rejected") else emptyList(),
         expiresAt = expiresAt,
     )
@@ -102,6 +111,7 @@ internal fun candidate(
 internal fun acquisition(
     subject: ReleaseSubject = ReleaseSubject.Movie(42),
     state: String = "queued",
+    progress: Double? = null,
     jellyfinItemId: String? = null,
     updatedAt: String = "2026-10-03T12:00:00Z",
 ): AcquisitionJobDto =
@@ -110,6 +120,7 @@ internal fun acquisition(
         subject = subject.toDto(),
         state = state,
         title = "Example.2026.2160p",
+        progress = progress,
         jellyfinItemId = jellyfinItemId,
         updatedAt = updatedAt,
     )

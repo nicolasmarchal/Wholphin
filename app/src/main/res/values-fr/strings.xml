@@ -755,6 +755,8 @@
     <string name="release_upstream_error">Radarr, Sonarr ou le client de téléchargement est indisponible.</string>
     <string name="release_generic_error">L’opération a échoué. Réessayez ou utilisez la demande automatique.</string>
     <string name="release_rejected_reason">Indisponible : %1$s</string>
+    <string name="release_policy_override_reason">Téléchargement autorisé malgré cette règle : %1$s</string>
+    <string name="release_policy_override_confirmation">Cette release ne respecte pas la règle configurée : %1$s. La télécharger quand même ?</string>
     <string name="release_rejected">Rejetée par Radarr ou Sonarr</string>
     <string name="release_not_approved">Non approuvée par le profil de qualité</string>
     <string name="release_seeders_unknown">Seeders : inconnus</string>

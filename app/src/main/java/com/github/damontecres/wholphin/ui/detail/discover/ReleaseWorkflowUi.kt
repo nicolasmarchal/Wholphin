@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.HorizontalDivider
@@ -49,6 +50,86 @@ import com.github.damontecres.wholphin.ui.formatBytes
 import com.github.damontecres.wholphin.ui.tryRequestFocus
 import com.github.damontecres.wholphin.util.DataLoadingState
 import java.util.Locale
+
+internal data class ReleaseQualitySection(
+    val label: String?,
+    val releases: List<ReleaseCandidate>,
+)
+
+private data class ReleaseQualityCategory(
+    val label: String?,
+    val resolutionHeight: Int?,
+)
+
+private sealed interface ReleaseResultListItem {
+    data class QualityHeader(
+        val sectionIndex: Int,
+        val label: String?,
+    ) : ReleaseResultListItem
+
+    data class ReleaseRow(
+        val releaseIndex: Int,
+        val release: ReleaseCandidate,
+        val isLastInSection: Boolean,
+    ) : ReleaseResultListItem
+}
+
+private val releaseResolutionPattern =
+    Regex("""(?<!\d)(2160|1440|1080|720|576|540|480|360|240)(?:[pi])?(?!\d)""")
+private val releaseFourKPattern = Regex("""(?:^|[^a-z0-9])4k(?:$|[^a-z0-9])""")
+
+internal fun groupReleasesByQuality(releases: List<ReleaseCandidate>): List<ReleaseQualitySection> =
+    releases
+        .groupBy { release -> release.quality.toQualityCategory() }
+        .entries
+        .sortedWith(
+            compareByDescending<Map.Entry<ReleaseQualityCategory, List<ReleaseCandidate>>> {
+                it.key.resolutionHeight ?: -1
+            }.thenBy { it.key.label == null }
+                .thenBy { it.key.label?.lowercase(Locale.ROOT).orEmpty() },
+        ).map { (category, candidates) ->
+            ReleaseQualitySection(
+                label = category.label,
+                releases = candidates.sortedBy(ReleaseCandidate::sizeBytes),
+            )
+        }
+
+private fun String.toQualityCategory(): ReleaseQualityCategory {
+    val original = trim().takeIf(String::isNotEmpty)
+    val normalized = original?.lowercase(Locale.ROOT).orEmpty()
+    val resolutionHeight =
+        when {
+            normalized.contains("uhd") || releaseFourKPattern.containsMatchIn(normalized) -> 2160
+            else -> releaseResolutionPattern.find(normalized)?.groupValues?.get(1)?.toInt()
+        }
+    val label =
+        when (resolutionHeight) {
+            2160 -> "4K"
+            null -> original
+            else -> "${resolutionHeight}p"
+        }
+    return ReleaseQualityCategory(
+        label = label,
+        resolutionHeight = resolutionHeight,
+    )
+}
+
+private fun List<ReleaseQualitySection>.toResultListItems(): List<ReleaseResultListItem> =
+    buildList {
+        var releaseIndex = 0
+        this@toResultListItems.forEachIndexed { sectionIndex, section ->
+            add(ReleaseResultListItem.QualityHeader(sectionIndex, section.label))
+            section.releases.forEachIndexed { indexInSection, release ->
+                add(
+                    ReleaseResultListItem.ReleaseRow(
+                        releaseIndex = releaseIndex++,
+                        release = release,
+                        isLastInSection = indexInSection == section.releases.lastIndex,
+                    ),
+                )
+            }
+        }
+    }
 
 data class DiscoverPrimaryAction(
     @param:StringRes val title: Int,
@@ -291,14 +372,22 @@ private fun ReleaseResultsDialog(
     onFallback: () -> Unit,
     onSearchEpisode: (() -> Unit)?,
 ) {
-    val focusRequesters = remember(releases) { List(releases.size) { FocusRequester() } }
+    val sections = remember(releases) { groupReleasesByQuality(releases) }
+    val listItems = remember(sections) { sections.toResultListItems() }
+    val orderedReleases =
+        remember(listItems) {
+            listItems.filterIsInstance<ReleaseResultListItem.ReleaseRow>().map { it.release }
+        }
+    val focusRequesters = remember(orderedReleases) { List(orderedReleases.size) { FocusRequester() } }
     val firstActionFocus = remember { FocusRequester() }
     val listState = rememberLazyListState()
-    LaunchedEffect(releases, restoreSelectionFingerprint) {
+    LaunchedEffect(listItems, restoreSelectionFingerprint) {
         val restoredIndex =
-            releases.indexOfFirst { it.selectionToken.redactedFingerprint() == restoreSelectionFingerprint }
+            orderedReleases.indexOfFirst {
+                it.selectionToken.redactedFingerprint() == restoreSelectionFingerprint
+            }
         val firstSelectableIndex =
-            releases.indexOfFirst { candidate ->
+            orderedReleases.indexOfFirst { candidate ->
                 subject?.let(candidate::matchesSubject) ?: candidate.selectable
             }
         // Rejected rows deliberately remain focusable so a D-pad user can inspect the reason.
@@ -307,10 +396,14 @@ private fun ReleaseResultsDialog(
         val index =
             restoredIndex.takeIf { it >= 0 }
                 ?: firstSelectableIndex.takeIf { it >= 0 }
-                ?: releases.indices.firstOrNull()
+                ?: orderedReleases.indices.firstOrNull()
                 ?: -1
         if (index >= 0) {
-            listState.scrollToItem(index)
+            val listItemIndex =
+                listItems.indexOfFirst { item ->
+                    item is ReleaseResultListItem.ReleaseRow && item.releaseIndex == index
+                }
+            listState.scrollToItem(listItemIndex)
             focusRequesters[index].tryRequestFocus("release-result-$index")
         } else {
             firstActionFocus.tryRequestFocus("release-result-action")
@@ -336,21 +429,48 @@ private fun ReleaseResultsDialog(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp),
             ) {
-                itemsIndexed(
-                    items = releases,
-                    key = { _, release -> release.selectionToken.redactedFingerprint() },
-                ) { index, release ->
-                    val compatible = subject?.let(release::matchesSubject) ?: release.selectable
-                    ReleaseResultRow(
-                        release = release,
-                        compatible = compatible,
-                        modifier =
-                            Modifier
-                                .focusRequester(focusRequesters[index])
-                                .testTag("release_result_$index"),
-                        onClick = { onSelect(release) },
-                    )
-                    if (index != releases.lastIndex) HorizontalDivider()
+                items(
+                    items = listItems,
+                    key = { item ->
+                        when (item) {
+                            is ReleaseResultListItem.QualityHeader ->
+                                "release-quality-header-${item.sectionIndex}"
+
+                            is ReleaseResultListItem.ReleaseRow ->
+                                item.release.selectionToken.redactedFingerprint()
+                        }
+                    },
+                    contentType = { item -> item::class },
+                ) { item ->
+                    when (item) {
+                        is ReleaseResultListItem.QualityHeader -> {
+                            Text(
+                                text = item.label ?: stringResource(R.string.unknown),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                        .testTag("release_quality_header_${item.sectionIndex}"),
+                            )
+                        }
+
+                        is ReleaseResultListItem.ReleaseRow -> {
+                            val release = item.release
+                            val compatible = subject?.let(release::matchesSubject) ?: release.selectable
+                            ReleaseResultRow(
+                                release = release,
+                                compatible = compatible,
+                                modifier =
+                                    Modifier
+                                        .focusRequester(focusRequesters[item.releaseIndex])
+                                        .testTag("release_result_${item.releaseIndex}"),
+                                onClick = { onSelect(release) },
+                            )
+                            if (!item.isLastInSection) HorizontalDivider()
+                        }
+                    }
                 }
             }
             if (showEpisodeSearch || showFallback) {
@@ -435,7 +555,15 @@ private fun ReleaseResultRow(
                 )
                 if (rejection.isNotBlank()) {
                     Text(
-                        text = stringResource(R.string.release_rejected_reason, rejection),
+                        text =
+                            stringResource(
+                                if (release.policyOverrideAllowed) {
+                                    R.string.release_policy_override_reason
+                                } else {
+                                    R.string.release_rejected_reason
+                                },
+                                rejection,
+                            ),
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -486,6 +614,16 @@ fun ReleaseConfirmationDialog(
                     ).joinToString(" · "),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (release.policyOverrideAllowed && release.rejectionReasons.isNotEmpty()) {
+                Text(
+                    text =
+                        stringResource(
+                            R.string.release_policy_override_confirmation,
+                            release.rejectionReasons.joinToString(" · "),
+                        ),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
                 modifier = Modifier.align(Alignment.End),

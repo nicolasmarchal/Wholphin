@@ -963,6 +963,8 @@
     <string name="release_upstream_error">Radarr, Sonarr or the download client is currently unavailable.</string>
     <string name="release_generic_error">The operation failed. Try again or use the automatic request flow.</string>
     <string name="release_rejected_reason">Unavailable: %1$s</string>
+    <string name="release_policy_override_reason">Download allowed despite this rule: %1$s</string>
+    <string name="release_policy_override_confirmation">This release does not meet the configured rule: %1$s. Download it anyway?</string>
     <string name="release_rejected">Rejected by Radarr or Sonarr</string>
     <string name="release_not_approved">Not approved by the quality profile</string>
     <string name="release_seeders_unknown">Seeders: unknown</string>

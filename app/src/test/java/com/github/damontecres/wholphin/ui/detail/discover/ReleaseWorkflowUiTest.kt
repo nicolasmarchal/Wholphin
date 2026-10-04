@@ -7,11 +7,50 @@ import com.github.damontecres.wholphin.services.release.ReleaseSubject
 import com.github.damontecres.wholphin.services.release.ReleaseWorkflowState
 import com.github.damontecres.wholphin.services.release.matchesSubject
 import com.github.damontecres.wholphin.services.release.toDto
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReleaseWorkflowUiTest {
+    @Test
+    fun `releases are grouped by descending resolution and sorted by ascending size`() {
+        val sections =
+            groupReleasesByQuality(
+                listOf(
+                    candidate(token = "1080-large", quality = "Bluray-1080p", sizeBytes = 8_000),
+                    candidate(token = "4k-large", quality = "WEBDL-2160p", sizeBytes = 20_000),
+                    candidate(token = "720", quality = "HDTV-720p", sizeBytes = 4_000),
+                    candidate(token = "4k-small", quality = "UHD BluRay", sizeBytes = 12_000),
+                    candidate(token = "1080-small", quality = "1080P", sizeBytes = 5_000),
+                    candidate(token = "dvd", quality = "DVD", sizeBytes = 2_000),
+                ),
+            )
+
+        assertEquals(listOf("4K", "1080p", "720p", "DVD"), sections.map { it.label })
+        assertEquals(
+            listOf("4k-small", "4k-large"),
+            sections.first().releases.map { it.selectionToken },
+        )
+        assertEquals(
+            listOf("1080-small", "1080-large"),
+            sections[1].releases.map { it.selectionToken },
+        )
+    }
+
+    @Test
+    fun `equal sized releases preserve companion ordering within their quality`() {
+        val sections =
+            groupReleasesByQuality(
+                listOf(
+                    candidate(token = "first", quality = "Remux-2160p", sizeBytes = 10_000),
+                    candidate(token = "second", quality = "4K", sizeBytes = 10_000),
+                ),
+            )
+
+        assertEquals(listOf("first", "second"), sections.single().releases.map { it.selectionToken })
+    }
+
     @Test
     fun `season search only accepts an approved full season release`() {
         val subject = ReleaseSubject.TvSeason(tmdbId = 10, seasonNumber = 2)
@@ -93,18 +132,21 @@ class ReleaseWorkflowUiTest {
     }
 
     private fun candidate(
+        token: String = "opaque-token",
+        quality: String = "1080p",
+        sizeBytes: Long = 1_024,
         fullSeason: Boolean = false,
         seasonNumber: Int? = null,
         episodeNumbers: List<Int> = emptyList(),
         approved: Boolean = true,
         rejected: Boolean = false,
     ) = ReleaseCandidate(
-        selectionToken = "opaque-token",
+        selectionToken = token,
         title = "Example release",
-        sizeBytes = 1_024,
+        sizeBytes = sizeBytes,
         seeders = 10,
         protocol = "torrent",
-        quality = "1080p",
+        quality = quality,
         indexer = "Example",
         approved = approved,
         rejected = rejected,

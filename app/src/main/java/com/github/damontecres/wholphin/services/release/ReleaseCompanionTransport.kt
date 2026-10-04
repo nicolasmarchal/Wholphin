@@ -1,5 +1,9 @@
 package com.github.damontecres.wholphin.services.release
 
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -10,6 +14,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.sse.EventSource
+import okhttp3.sse.EventSourceListener
+import okhttp3.sse.EventSources
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
@@ -82,8 +89,18 @@ data class ReleaseTransportResponse(
             "headerNames=${headers.keys})"
 }
 
+data class ReleaseTransportEvent(
+    val id: String?,
+    val type: String?,
+    val data: String,
+)
+
 fun interface ReleaseCompanionTransport {
     suspend fun execute(request: ReleaseTransportRequest): ReleaseTransportResponse
+
+    /** Opens a cancellable SSE stream. Test and legacy transports fall back to polling. */
+    fun stream(request: ReleaseTransportRequest): Flow<ReleaseTransportEvent> =
+        flow { throw ReleaseCompanionException.StreamingUnavailable() }
 }
 
 data class CompanionOriginPolicy(
@@ -129,19 +146,75 @@ class OkHttpReleaseCompanionTransport(
             .writeTimeout(timeouts.writeMillis, TimeUnit.MILLISECONDS)
             .callTimeout(timeouts.callMillis, TimeUnit.MILLISECONDS)
             .build()
+    private val streamClient =
+        client
+            .newBuilder()
+            // Heartbeats reset this timeout; a silent half-open stream becomes reconnectable.
+            .readTimeout(releaseStreamReadTimeoutMillis(timeouts.readMillis), TimeUnit.MILLISECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
 
     init {
         require(maximumResponseCharacters > 0) { "maximumResponseCharacters must be positive" }
     }
 
     override suspend fun execute(request: ReleaseTransportRequest): ReleaseTransportResponse {
+        return executeCall(client.newCall(buildRequest(request, JSON_MEDIA_TYPE)))
+    }
+
+    override fun stream(request: ReleaseTransportRequest): Flow<ReleaseTransportEvent> =
+        callbackFlow {
+            require(request.method == ReleaseHttpMethod.GET) { "SSE requests must use GET" }
+            val eventSource =
+                EventSources.createFactory(streamClient).newEventSource(
+                    buildRequest(request, EVENT_STREAM_MEDIA_TYPE),
+                    object : EventSourceListener() {
+                        override fun onEvent(
+                            eventSource: EventSource,
+                            id: String?,
+                            type: String?,
+                            data: String,
+                        ) {
+                            if (data.length > maximumResponseCharacters) {
+                                close(ReleaseCompanionException.ResponseTooLarge(maximumResponseCharacters))
+                                eventSource.cancel()
+                                return
+                            }
+                            if (trySend(ReleaseTransportEvent(id = id, type = type, data = data)).isFailure) {
+                                close(ReleaseCompanionException.StreamingUnavailable())
+                                eventSource.cancel()
+                            }
+                        }
+
+                        override fun onClosed(eventSource: EventSource) {
+                            close()
+                        }
+
+                        override fun onFailure(
+                            eventSource: EventSource,
+                            t: Throwable?,
+                            response: Response?,
+                        ) {
+                            val failure = mapReleaseStreamFailure(t, response)
+                            response?.close()
+                            close(failure)
+                        }
+                    },
+                )
+            awaitClose { eventSource.cancel() }
+        }
+
+    private fun buildRequest(
+        request: ReleaseTransportRequest,
+        accept: String,
+    ): Request {
         val url = buildUrl(request)
         checkSameOrigin(url)
         val builder =
             Request
                 .Builder()
                 .url(url)
-                .header("Accept", JSON_MEDIA_TYPE)
+                .header("Accept", accept)
 
         request.bearerToken?.let {
             builder.header("Authorization", "Bearer ${it.reveal()}")
@@ -161,8 +234,7 @@ class OkHttpReleaseCompanionTransport(
                 builder.post(body)
             }
         }
-
-        return executeCall(client.newCall(builder.build()))
+        return builder.build()
     }
 
     internal fun buildUrl(request: ReleaseTransportRequest): HttpUrl {
@@ -239,7 +311,9 @@ class OkHttpReleaseCompanionTransport(
 
     companion object {
         private const val JSON_MEDIA_TYPE = "application/json"
+        private const val EVENT_STREAM_MEDIA_TYPE = "text/event-stream"
         private const val DEFAULT_MAXIMUM_RESPONSE_CHARACTERS = 2_000_000
+        internal const val DEFAULT_STREAM_READ_TIMEOUT_MILLIS = 35_000L
 
         internal fun validateBaseUrl(
             value: String,
@@ -269,3 +343,42 @@ class OkHttpReleaseCompanionTransport(
         }
     }
 }
+
+/** OkHttp retains the successful opening response when an established SSE body later fails. */
+internal fun mapReleaseStreamFailure(
+    failure: Throwable?,
+    response: Response?,
+): ReleaseCompanionException =
+    when {
+        failure is SocketTimeoutException || failure is InterruptedIOException -> {
+            ReleaseCompanionException.Timeout(failure)
+        }
+
+        failure is IOException -> ReleaseCompanionException.Network(failure)
+        response != null && !response.isSuccessful -> {
+            when (response.code) {
+                401 -> ReleaseCompanionException.AuthenticationRequired()
+                403 -> ReleaseCompanionException.Forbidden()
+                404 -> ReleaseCompanionException.NotFound()
+                429 ->
+                    ReleaseCompanionException.RateLimited(
+                        retryAfterSeconds = response.header("Retry-After")?.toLongOrNull(),
+                    )
+
+                502, 503, 504 ->
+                    ReleaseCompanionException.UpstreamUnavailable(
+                        statusCode = response.code,
+                    )
+
+                else -> ReleaseCompanionException.HttpFailure(response.code)
+            }
+        }
+
+        else -> ReleaseCompanionException.StreamingUnavailable(failure)
+    }
+
+internal fun releaseStreamReadTimeoutMillis(configuredReadTimeoutMillis: Long): Long =
+    maxOf(
+        configuredReadTimeoutMillis,
+        OkHttpReleaseCompanionTransport.DEFAULT_STREAM_READ_TIMEOUT_MILLIS,
+    )

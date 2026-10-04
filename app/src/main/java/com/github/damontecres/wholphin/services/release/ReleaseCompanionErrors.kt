@@ -78,6 +78,10 @@ sealed class ReleaseCompanionException(
         val maximumCharacters: Int,
     ) : ReleaseCompanionException("Companion response exceeded the configured size limit")
 
+    class StreamingUnavailable(
+        cause: Throwable? = null,
+    ) : ReleaseCompanionException("Live companion updates are unavailable", cause)
+
     class PollingExhausted(
         val attempts: Int,
     ) : ReleaseCompanionException("Companion polling stopped after $attempts attempts")

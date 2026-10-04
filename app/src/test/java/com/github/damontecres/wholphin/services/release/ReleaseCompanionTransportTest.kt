@@ -1,11 +1,16 @@
 package com.github.damontecres.wholphin.services.release
 
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 
 class ReleaseCompanionTransportTest {
     @Test
@@ -86,5 +91,30 @@ class ReleaseCompanionTransportTest {
         assertFalse(response.toString().contains("header-secret"))
         assertTrue(request.toString().contains("<redacted>"))
         assertTrue(response.toString().contains("<redacted>"))
+    }
+
+    @Test
+    fun `SSE watchdog remains above the companion heartbeat`() {
+        assertEquals(35_000L, releaseStreamReadTimeoutMillis(configuredReadTimeoutMillis = 1_000))
+        assertEquals(60_000L, releaseStreamReadTimeoutMillis(configuredReadTimeoutMillis = 60_000))
+    }
+
+    @Test
+    fun `established SSE IO failure is not misclassified as HTTP 200`() {
+        val response =
+            Response
+                .Builder()
+                .request(Request.Builder().url("https://companion.lan/events").build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body("".toResponseBody())
+                .build()
+
+        response.use {
+            val failure = mapReleaseStreamFailure(IOException("connection reset"), response)
+
+            assertTrue(failure is ReleaseCompanionException.Network)
+        }
     }
 }

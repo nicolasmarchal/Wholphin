@@ -1,10 +1,17 @@
 package com.github.damontecres.wholphin.services.release
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -83,6 +90,88 @@ class ReleaseAcquisitionControllerTest {
 
             val state = controller.state.value as ReleaseWorkflowState.Results
             assertSame(expected, state.search.releases.single())
+        }
+
+    @Test
+    fun `completed results are refreshed before their selection tokens expire`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.startedSearch = { subject ->
+                search(
+                    subject = subject,
+                    state = "completed",
+                    releases = listOf(candidate()),
+                    expiresAt = "2026-10-03T12:10:00Z",
+                )
+            }
+            val requestedDelays = mutableListOf<Long>()
+            val refreshNow = CompletableDeferred<Unit>()
+            var delayCalls = 0
+            val controller =
+                controller(
+                    repository = repository,
+                    resultsRefreshDelay =
+                        ReleasePollDelay { millis ->
+                            requestedDelays += millis
+                            delayCalls += 1
+                            if (delayCalls == 1) {
+                                refreshNow.await()
+                            } else {
+                                awaitCancellation()
+                            }
+                        },
+                )
+
+            controller.search(ReleaseSubject.Movie(42))
+            runCurrent()
+
+            assertTrue(controller.state.value is ReleaseWorkflowState.Results)
+            assertEquals(listOf(540_000L), requestedDelays)
+            assertEquals(1, repository.startSearchCalls)
+
+            refreshNow.complete(Unit)
+            runCurrent()
+
+            assertEquals(2, repository.startSearchCalls)
+            assertTrue(controller.state.value is ReleaseWorkflowState.Results)
+
+            controller.stopPolling()
+        }
+
+    @Test
+    fun `cancelled refresh cannot replace a newer confirmation`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.startedSearch = { subject -> search(subject, "completed", listOf(candidate())) }
+            repository.acquired = { _, _ ->
+                acquisition(
+                    state = "available",
+                    jellyfinItemId = "11111111-1111-1111-1111-111111111111",
+                )
+            }
+            val refreshNow = CompletableDeferred<Unit>()
+            val subject = ReleaseSubject.Movie(42)
+            val controller =
+                controller(
+                    repository = repository,
+                    resultsRefreshDelay =
+                        ReleasePollDelay {
+                            // Models a delay implementation that resumes at the cancellation boundary.
+                            withContext(NonCancellable) { refreshNow.await() }
+                        },
+                )
+
+            controller.search(subject)
+            runCurrent()
+            controller.confirm(subject, candidate())
+            runCurrent()
+
+            assertTrue(controller.state.value is ReleaseWorkflowState.Available)
+            refreshNow.complete(Unit)
+            runCurrent()
+
+            assertEquals(1, repository.startSearchCalls)
+            assertTrue(controller.state.value is ReleaseWorkflowState.Available)
         }
 
     @Test
@@ -200,6 +289,138 @@ class ReleaseAcquisitionControllerTest {
         }
 
     @Test
+    fun `live acquisition events update progress without polling`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.rehydrated = acquisition(state = "queued")
+            repository.acquisitionStream =
+                flowOf(
+                    acquisition(state = "downloading", progress = 37.5),
+                    acquisition(
+                        state = "available",
+                        progress = 100.0,
+                        jellyfinItemId = "11111111-1111-1111-1111-111111111111",
+                    ),
+                )
+            val controller = controller(repository)
+
+            controller.resume(ReleaseSubject.Movie(42))
+            advanceUntilIdle()
+
+            assertTrue(controller.state.value is ReleaseWorkflowState.Available)
+            assertEquals(0, repository.acquisitionPollCount)
+        }
+
+    @Test
+    fun `transient live stream failure reconnects without degrading to polling`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.rehydrated = acquisition(state = "queued")
+            repository.acquisitionStreamFactory = {
+                if (repository.acquisitionStreamCount == 1) {
+                    flow { throw ReleaseCompanionException.Network(IOException("connection reset")) }
+                } else {
+                    flowOf(
+                        acquisition(
+                            state = "available",
+                            progress = 100.0,
+                            jellyfinItemId = "11111111-1111-1111-1111-111111111111",
+                        ),
+                    )
+                }
+            }
+            val reconnectDelays = mutableListOf<Long>()
+            val controller =
+                controller(
+                    repository = repository,
+                    streamReconnectDelay = ReleasePollDelay { reconnectDelays += it },
+                )
+
+            controller.resume(ReleaseSubject.Movie(42))
+            advanceUntilIdle()
+
+            assertTrue(controller.state.value is ReleaseWorkflowState.Available)
+            assertEquals(2, repository.acquisitionStreamCount)
+            assertEquals(listOf(1_000L), reconnectDelays)
+            assertEquals(0, repository.acquisitionPollCount)
+        }
+
+    @Test
+    fun `healthy stream lifetime does not consume the reconnect window`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.rehydrated = acquisition(state = "queued")
+            var elapsedMillis = 0L
+            repository.acquisitionStreamFactory = {
+                if (repository.acquisitionStreamCount == 1) {
+                    flow {
+                        emit(acquisition(state = "downloading", progress = 50.0))
+                        elapsedMillis = 60_000
+                    }
+                } else {
+                    flowOf(
+                        acquisition(
+                            state = "available",
+                            progress = 100.0,
+                            jellyfinItemId = "11111111-1111-1111-1111-111111111111",
+                        ),
+                    )
+                }
+            }
+            val controller =
+                controller(
+                    repository = repository,
+                    monotonicClock = ReleaseMonotonicClock { elapsedMillis },
+                )
+
+            controller.resume(ReleaseSubject.Movie(42))
+            advanceUntilIdle()
+
+            assertTrue(controller.state.value is ReleaseWorkflowState.Available)
+            assertEquals(2, repository.acquisitionStreamCount)
+            assertEquals(0, repository.acquisitionPollCount)
+        }
+
+    @Test
+    fun `identical closing snapshots exhaust reconnect budget then retain polling fallback`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            repository.rehydrated = acquisition(state = "downloading", progress = 25.0)
+            repository.acquisitionStreamFactory = {
+                flowOf(requireNotNull(repository.rehydrated))
+            }
+            repository.polledAcquisition = {
+                acquisition(
+                    state = "available",
+                    progress = 100.0,
+                    jellyfinItemId = "11111111-1111-1111-1111-111111111111",
+                )
+            }
+            val reconnectDelays = mutableListOf<Long>()
+            val controller =
+                controller(
+                    repository = repository,
+                    streamReconnectPolicy =
+                        BoundedPollingPolicy(
+                            initialDelayMillis = 5,
+                            maximumDelayMillis = 5,
+                            multiplier = 1.0,
+                            maximumAttempts = 2,
+                            maximumElapsedMillis = 1_000,
+                        ),
+                    streamReconnectDelay = ReleasePollDelay { reconnectDelays += it },
+                )
+
+            controller.resume(ReleaseSubject.Movie(42))
+            advanceUntilIdle()
+
+            assertTrue(controller.state.value is ReleaseWorkflowState.Available)
+            assertEquals(2, repository.acquisitionStreamCount)
+            assertEquals(listOf(5L), reconnectDelays)
+            assertEquals(1, repository.acquisitionPollCount)
+        }
+
+    @Test
     fun `unapproved candidate never reaches the repository`() =
         runTest {
             val repository = FakeReleaseRepository()
@@ -217,7 +438,26 @@ class ReleaseAcquisitionControllerTest {
         }
 
     @Test
-    fun `malformed candidate expiry starts a fresh search instead of retrying its token`() =
+    fun `soft policy override reaches the repository without another confirmation`() =
+        runTest {
+            val repository = FakeReleaseRepository()
+            val controller = controller(repository)
+
+            controller.confirm(
+                ReleaseSubject.Movie(42),
+                candidate(
+                    approved = false,
+                    rejected = true,
+                    policyOverrideAllowed = true,
+                ),
+            )
+            advanceUntilIdle()
+
+            assertEquals(1, repository.acquireCalls)
+        }
+
+    @Test
+    fun `malformed candidate expiry automatically starts a fresh search`() =
         runTest {
             val repository = FakeReleaseRepository()
             val controller = controller(repository)
@@ -227,13 +467,8 @@ class ReleaseAcquisitionControllerTest {
             advanceUntilIdle()
 
             assertEquals(0, repository.acquireCalls)
-            assertTrue(controller.state.value is ReleaseWorkflowState.SearchExpired)
-
-            controller.retry(subject)
-            advanceUntilIdle()
-
-            assertEquals(0, repository.acquireCalls)
             assertTrue(controller.state.value is ReleaseWorkflowState.Empty)
+            assertEquals(1, repository.startSearchCalls)
         }
 
     @Test
@@ -277,10 +512,16 @@ class ReleaseAcquisitionControllerTest {
     private fun kotlinx.coroutines.test.TestScope.controller(
         repository: FakeReleaseRepository,
         searchPolicy: BoundedPollingPolicy = BoundedPollingPolicy.Search,
+        streamReconnectPolicy: BoundedPollingPolicy = BoundedPollingPolicy.StreamReconnect,
+        streamReconnectDelay: ReleasePollDelay = ReleasePollDelay { },
+        resultsRefreshDelay: ReleasePollDelay =
+            ReleasePollDelay { throw CancellationException("Automatic result refresh disabled in this test") },
+        monotonicClock: ReleaseMonotonicClock = ReleaseMonotonicClock { 0 },
     ) = ReleaseAcquisitionController(
         repository = repository,
         scope = this,
         searchPolicy = searchPolicy,
+        streamReconnectPolicy = streamReconnectPolicy,
         acquisitionPolicy =
             BoundedPollingPolicy(
                 initialDelayMillis = 0,
@@ -290,7 +531,9 @@ class ReleaseAcquisitionControllerTest {
                 maximumElapsedMillis = 60_000,
             ),
         pollDelay = ReleasePollDelay { },
-        monotonicClock = ReleaseMonotonicClock { 0 },
+        streamReconnectDelay = streamReconnectDelay,
+        resultsRefreshDelay = resultsRefreshDelay,
+        monotonicClock = monotonicClock,
         wallClock = ReleaseClock { Instant.parse("2026-10-03T12:00:00Z") },
         idempotencyKeyFactory = ReleaseIdempotencyKeyFactory { SensitiveValue.of("stable-key-123456") },
     )
@@ -309,12 +552,20 @@ private class FakeReleaseRepository : ReleaseCompanionRepository {
     var polledAcquisition: suspend (String) -> AcquisitionJobDto = {
         acquisition(state = "available", jellyfinItemId = "11111111-1111-1111-1111-111111111111")
     }
+    var acquisitionStream: Flow<AcquisitionJobDto>? = null
+    var acquisitionStreamFactory: ((String) -> Flow<AcquisitionJobDto>)? = null
     var acquireCalls = 0
+    var startSearchCalls = 0
     var searchPollCount = 0
+    var acquisitionPollCount = 0
+    var acquisitionStreamCount = 0
 
     override suspend fun capabilities(): CompanionCapabilitiesDto = CompanionCapabilitiesDto(false, false)
 
-    override suspend fun startSearch(subject: ReleaseSubject): ReleaseSearchDto = startedSearch(subject)
+    override suspend fun startSearch(subject: ReleaseSubject): ReleaseSearchDto {
+        startSearchCalls += 1
+        return startedSearch(subject)
+    }
 
     override suspend fun getSearch(searchId: String): ReleaseSearchDto {
         searchPollCount += 1
@@ -339,7 +590,17 @@ private class FakeReleaseRepository : ReleaseCompanionRepository {
         return rehydratedSeries
     }
 
-    override suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto = polledAcquisition(acquisitionId)
+    override suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto {
+        acquisitionPollCount += 1
+        return polledAcquisition(acquisitionId)
+    }
+
+    override fun streamAcquisition(acquisitionId: String): Flow<AcquisitionJobDto> {
+        acquisitionStreamCount += 1
+        return acquisitionStreamFactory?.invoke(acquisitionId)
+            ?: acquisitionStream
+            ?: super.streamAcquisition(acquisitionId)
+    }
 
     override suspend fun cancel(
         acquisitionId: String,
@@ -353,11 +614,12 @@ private fun search(
     subject: ReleaseSubject,
     state: String,
     releases: List<ReleaseCandidate> = emptyList(),
+    expiresAt: String = "2099-01-01T00:00:00Z",
 ): ReleaseSearchDto =
     ReleaseSearchDto(
         searchId = "search-1",
         subject = subject.toDto(),
         state = state,
-        expiresAt = "2099-01-01T00:00:00Z",
+        expiresAt = expiresAt,
         releases = releases,
     )

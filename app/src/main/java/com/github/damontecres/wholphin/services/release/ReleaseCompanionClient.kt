@@ -1,5 +1,8 @@
 package com.github.damontecres.wholphin.services.release
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -52,6 +55,12 @@ interface ReleaseCompanionApi {
         sessionToken: SensitiveValue,
         acquisitionId: String,
     ): AcquisitionJobDto
+
+    fun streamAcquisition(
+        sessionToken: SensitiveValue,
+        acquisitionId: String,
+    ): Flow<AcquisitionJobDto> =
+        flow { throw ReleaseCompanionException.StreamingUnavailable() }
 
     suspend fun cancelAcquisition(
         sessionToken: SensitiveValue,
@@ -205,6 +214,30 @@ class DefaultReleaseCompanionApi(
                 ),
             ).decodeExpected(setOf(200))
 
+    override fun streamAcquisition(
+        sessionToken: SensitiveValue,
+        acquisitionId: String,
+    ): Flow<AcquisitionJobDto> =
+        transport
+            .stream(
+                ReleaseTransportRequest(
+                    method = ReleaseHttpMethod.GET,
+                    pathSegments =
+                        listOf(
+                            "v1",
+                            "acquisitions",
+                            validatedId(acquisitionId),
+                            "events",
+                        ),
+                    bearerToken = sessionToken,
+                ),
+            ).mapNotNull { event ->
+                if (event.type != null && event.type != ACQUISITION_EVENT) {
+                    return@mapNotNull null
+                }
+                decodeEvent<AcquisitionJobDto>(event.data)
+            }
+
     override suspend fun cancelAcquisition(
         sessionToken: SensitiveValue,
         acquisitionId: String,
@@ -264,6 +297,19 @@ class DefaultReleaseCompanionApi(
             )
         }
     }
+
+    private inline fun <reified T> decodeEvent(body: String): T =
+        try {
+            json.decodeFromString(body)
+        } catch (_: SerializationException) {
+            throw ReleaseCompanionException.InvalidResponse(
+                "Companion returned an invalid ${T::class.simpleName} event",
+            )
+        } catch (_: IllegalArgumentException) {
+            throw ReleaseCompanionException.InvalidResponse(
+                "Companion returned an inconsistent ${T::class.simpleName} event",
+            )
+        }
 
     private fun ReleaseTransportResponse.requireStatus(expectedStatuses: Set<Int>) {
         if (statusCode in expectedStatuses) return
@@ -327,6 +373,10 @@ class DefaultReleaseCompanionApi(
                 )
             }
         }
+
+    private companion object {
+        const val ACQUISITION_EVENT = "acquisition"
+    }
 }
 
 internal val ReleaseSubjectKind.wireValue: String

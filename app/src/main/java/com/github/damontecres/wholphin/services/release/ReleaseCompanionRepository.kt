@@ -1,5 +1,8 @@
 package com.github.damontecres.wholphin.services.release
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.Duration
@@ -43,6 +46,9 @@ interface ReleaseCompanionRepository {
     suspend fun rehydrateLatestSeries(tmdbId: Int): AcquisitionJobDto?
 
     suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto
+
+    fun streamAcquisition(acquisitionId: String): Flow<AcquisitionJobDto> =
+        flow { throw ReleaseCompanionException.StreamingUnavailable() }
 
     suspend fun cancel(
         acquisitionId: String,
@@ -113,6 +119,18 @@ class DefaultReleaseCompanionRepository(
     }
 
     override suspend fun getAcquisition(acquisitionId: String): AcquisitionJobDto = authenticated { api.getAcquisition(it, acquisitionId) }
+
+    override fun streamAcquisition(acquisitionId: String): Flow<AcquisitionJobDto> =
+        flow {
+            val initial = validSession()
+            try {
+                emitAll(api.streamAcquisition(initial.session.token, acquisitionId))
+            } catch (_: ReleaseCompanionException.AuthenticationRequired) {
+                invalidate(initial)
+                val refreshed = validSession(requiredIdentityKey = initial.identityKey)
+                emitAll(api.streamAcquisition(refreshed.session.token, acquisitionId))
+            }
+        }
 
     override suspend fun cancel(
         acquisitionId: String,

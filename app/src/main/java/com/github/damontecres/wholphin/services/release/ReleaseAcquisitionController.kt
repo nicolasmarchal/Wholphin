@@ -7,7 +7,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import kotlin.math.min
@@ -107,6 +109,15 @@ data class BoundedPollingPolicy(
                 maximumAttempts = 720,
                 maximumElapsedMillis = 6 * 60 * 60 * 1_000L,
             )
+
+        val StreamReconnect =
+            BoundedPollingPolicy(
+                initialDelayMillis = 1_000,
+                maximumDelayMillis = 8_000,
+                multiplier = 2.0,
+                maximumAttempts = 5,
+                maximumElapsedMillis = 30_000,
+            )
     }
 }
 
@@ -134,10 +145,14 @@ class ReleaseAcquisitionController(
     private val scope: CoroutineScope,
     private val searchPolicy: BoundedPollingPolicy = BoundedPollingPolicy.Search,
     private val acquisitionPolicy: BoundedPollingPolicy = BoundedPollingPolicy.Acquisition,
+    private val streamReconnectPolicy: BoundedPollingPolicy = BoundedPollingPolicy.StreamReconnect,
     private val pollDelay: ReleasePollDelay = ReleasePollDelay { delay(it) },
+    private val streamReconnectDelay: ReleasePollDelay = pollDelay,
+    private val resultsRefreshDelay: ReleasePollDelay = ReleasePollDelay { delay(it) },
     private val monotonicClock: ReleaseMonotonicClock =
         ReleaseMonotonicClock { System.nanoTime() / 1_000_000L },
     private val wallClock: ReleaseClock = ReleaseClock { Instant.now() },
+    private val refreshBeforeExpiry: Duration = Duration.ofMinutes(1),
     private val idempotencyKeyFactory: ReleaseIdempotencyKeyFactory =
         ReleaseIdempotencyKeyFactory { SensitiveValue.of(UUID.randomUUID().toString()) },
 ) {
@@ -147,10 +162,16 @@ class ReleaseAcquisitionController(
     private val acceptedSelections = mutableSetOf<String>()
 
     private var operation: Job? = null
+    private var resultsRefresh: Job? = null
+    private var resultsRefreshGeneration = 0L
     private var confirmingFingerprint: String? = null
     private var lastSelection: Selection? = null
 
     val state: StateFlow<ReleaseWorkflowState> = stateFlow.asStateFlow()
+
+    init {
+        require(!refreshBeforeExpiry.isNegative) { "refreshBeforeExpiry must not be negative" }
+    }
 
     fun resume(subject: ReleaseSubject) {
         launchReplacing {
@@ -219,9 +240,15 @@ class ReleaseAcquisitionController(
             is ReleaseWorkflowState.Cancelled,
             is ReleaseWorkflowState.Empty,
             is ReleaseWorkflowState.Failed,
-            is ReleaseWorkflowState.Results,
-            is ReleaseWorkflowState.SearchExpired,
             -> {}
+
+            is ReleaseWorkflowState.Results -> {
+                scheduleResultsRefresh(subject, current.search)
+            }
+
+            is ReleaseWorkflowState.SearchExpired -> {
+                search(subject)
+            }
         }
     }
 
@@ -319,19 +346,7 @@ class ReleaseAcquisitionController(
     }
 
     fun search(subject: ReleaseSubject) {
-        launchReplacing {
-            stateFlow.value = ReleaseWorkflowState.Searching(subject)
-            try {
-                val search = repository.startSearch(subject)
-                followSearch(subject, search)
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (_: ReleaseCompanionException.SelectionExpired) {
-                stateFlow.value = ReleaseWorkflowState.SearchExpired(subject)
-            } catch (failure: ReleaseCompanionException) {
-                fail(subject, ReleaseOperationStage.SEARCH, failure)
-            }
-        }
+        launchReplacing { performSearch(subject) }
     }
 
     /** Duplicate D-pad confirmations share one in-flight operation and one idempotency key. */
@@ -342,6 +357,7 @@ class ReleaseAcquisitionController(
         val fingerprint = release.selectionToken.redactedFingerprint()
         synchronized(operationLock) {
             if (fingerprint in acceptedSelections || confirmingFingerprint == fingerprint) return
+            cancelResultsRefreshLocked()
             operation?.cancel()
             confirmingFingerprint = fingerprint
             lastSelection = Selection(subject, release)
@@ -362,7 +378,7 @@ class ReleaseAcquisitionController(
                     } catch (cancellation: CancellationException) {
                         throw cancellation
                     } catch (_: ReleaseCompanionException.SelectionExpired) {
-                        stateFlow.value = ReleaseWorkflowState.SearchExpired(subject)
+                        refreshExpiredResults(subject)
                     } catch (failure: ReleaseCompanionException) {
                         fail(subject, ReleaseOperationStage.SELECTION, failure)
                     } finally {
@@ -406,14 +422,36 @@ class ReleaseAcquisitionController(
         synchronized(operationLock) {
             operation?.cancel()
             operation = null
+            cancelResultsRefreshLocked()
             confirmingFingerprint = null
         }
     }
 
     private fun launchReplacing(block: suspend () -> Unit) {
         synchronized(operationLock) {
+            cancelResultsRefreshLocked()
             operation?.cancel()
             operation = scope.launch { block() }
+        }
+    }
+
+    private fun cancelResultsRefreshLocked() {
+        resultsRefreshGeneration += 1
+        resultsRefresh?.cancel()
+        resultsRefresh = null
+    }
+
+    private suspend fun performSearch(subject: ReleaseSubject) {
+        stateFlow.value = ReleaseWorkflowState.Searching(subject)
+        try {
+            val search = repository.startSearch(subject)
+            followSearch(subject, search)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: ReleaseCompanionException.SelectionExpired) {
+            stateFlow.value = ReleaseWorkflowState.SearchExpired(subject)
+        } catch (failure: ReleaseCompanionException) {
+            fail(subject, ReleaseOperationStage.SEARCH, failure)
         }
     }
 
@@ -434,6 +472,9 @@ class ReleaseAcquisitionController(
                         } else {
                             ReleaseWorkflowState.Results(subject, latest)
                         }
+                    if (latest.releases.isNotEmpty()) {
+                        scheduleResultsRefresh(subject, latest)
+                    }
                     return
                 }
 
@@ -492,6 +533,73 @@ class ReleaseAcquisitionController(
         initial: AcquisitionJobDto,
     ) {
         var latest = initial
+        if (transitionAcquisition(subject, latest)) return
+
+        var streamDelayMillis = streamReconnectPolicy.initialDelayMillis
+        var consecutiveStreamFailures = 0
+        var streamFailureWindowStartedAt: Long? = null
+        while (true) {
+            if (
+                streamFailureWindowStartedAt?.let { startedAt ->
+                    pollingExhausted(
+                        streamReconnectPolicy,
+                        startedAt,
+                        consecutiveStreamFailures,
+                    )
+                } == true
+            ) {
+                break
+            }
+            val retryStream =
+                try {
+                    repository.streamAcquisition(latest.id).first { update ->
+                        if (update.id != latest.id) {
+                            throw ReleaseCompanionException.InvalidResponse(
+                                "Companion returned an update for another acquisition",
+                            )
+                        }
+                        if (update != latest) {
+                            // Bound consecutive reconnect failures, not the lifetime of a healthy
+                            // stream. An identical opening snapshot does not reset this budget.
+                            consecutiveStreamFailures = 0
+                            streamFailureWindowStartedAt = null
+                            streamDelayMillis = streamReconnectPolicy.initialDelayMillis
+                        }
+                        latest = update
+                        transitionAcquisition(subject, latest)
+                    }
+                    return
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: NoSuchElementException) {
+                    // A clean non-terminal close is retryable (restart, proxy rotation, auth expiry).
+                    true
+                } catch (failure: ReleaseCompanionException) {
+                    failure.retryableForLiveStream
+                }
+
+            if (!retryStream) {
+                break
+            }
+            val failureWindowStartedAt =
+                streamFailureWindowStartedAt
+                    ?: monotonicClock.elapsedRealtimeMillis().also {
+                        streamFailureWindowStartedAt = it
+                    }
+            consecutiveStreamFailures += 1
+            if (
+                pollingExhausted(
+                    streamReconnectPolicy,
+                    failureWindowStartedAt,
+                    consecutiveStreamFailures,
+                )
+            ) {
+                break
+            }
+            streamReconnectDelay.await(streamDelayMillis)
+            streamDelayMillis = streamReconnectPolicy.nextDelay(streamDelayMillis)
+        }
+
         val startedAt = monotonicClock.elapsedRealtimeMillis()
         var delayMillis = acquisitionPolicy.initialDelayMillis
         var attempts = 0
@@ -548,6 +656,68 @@ class ReleaseAcquisitionController(
             } catch (failure: ReleaseCompanionException) {
                 fail(subject, ReleaseOperationStage.REHYDRATION, failure)
             }
+        }
+    }
+
+    private suspend fun refreshExpiredResults(subject: ReleaseSubject) {
+        stateFlow.value = ReleaseWorkflowState.Searching(subject)
+        try {
+            followSearch(subject, repository.startSearch(subject))
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: ReleaseCompanionException) {
+            fail(subject, ReleaseOperationStage.SEARCH, failure)
+        }
+    }
+
+    private fun scheduleResultsRefresh(
+        subject: ReleaseSubject,
+        search: ReleaseSearchDto,
+    ) {
+        val expiry =
+            try {
+                Instant.parse(search.expiresAt)
+            } catch (_: Exception) {
+                return
+            }
+        val remainingMillis = Duration.between(wallClock.now(), expiry).toMillis().coerceAtLeast(0)
+        // Keep a proportional guard for deployments configured with a very short selection TTL.
+        val proportionalLead = (remainingMillis / 10).coerceAtLeast(1)
+        val leadMillis = min(refreshBeforeExpiry.toMillis(), proportionalLead)
+        val refreshInMillis = (remainingMillis - leadMillis).coerceAtLeast(0)
+        synchronized(operationLock) {
+            cancelResultsRefreshLocked()
+            val generation = resultsRefreshGeneration
+            resultsRefresh =
+                scope.launch {
+                    resultsRefreshDelay.await(refreshInMillis)
+                    launchScheduledRefresh(subject, search.searchId, generation)
+                }
+        }
+    }
+
+    /**
+     * Claims a scheduled refresh atomically. A cancelled delay is allowed to resume, so both the
+     * generation and the canonical result identity must still match before replacing an operation.
+     */
+    private fun launchScheduledRefresh(
+        subject: ReleaseSubject,
+        searchId: String,
+        generation: Long,
+    ) {
+        synchronized(operationLock) {
+            val current = stateFlow.value as? ReleaseWorkflowState.Results ?: return
+            if (
+                resultsRefreshGeneration != generation ||
+                current.subject != subject ||
+                current.search.searchId != searchId
+            ) {
+                return
+            }
+            resultsRefresh = null
+            resultsRefreshGeneration += 1
+            operation?.cancel()
+            operation = scope.launch { performSearch(subject) }
         }
     }
 
@@ -670,3 +840,17 @@ private fun CompanionErrorDto?.toOperationFailure(): ReleaseCompanionException.R
         errorCode = this?.code,
         retryable = this?.retryable ?: false,
     )
+
+private val ReleaseCompanionException.retryableForLiveStream: Boolean
+    get() =
+        when (this) {
+            is ReleaseCompanionException.AuthenticationRequired,
+            is ReleaseCompanionException.Network,
+            is ReleaseCompanionException.RateLimited,
+            is ReleaseCompanionException.Timeout,
+            is ReleaseCompanionException.UpstreamUnavailable,
+            -> true
+
+            is ReleaseCompanionException.HttpFailure -> retryable
+            else -> false
+        }

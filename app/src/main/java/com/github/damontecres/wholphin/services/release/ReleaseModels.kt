@@ -170,6 +170,7 @@ data class ReleaseCandidate(
     val indexer: String,
     val approved: Boolean,
     val rejected: Boolean = false,
+    val policyOverrideAllowed: Boolean = false,
     @SerialName("rejections")
     val rejectionReasons: List<String> = emptyList(),
     val fullSeason: Boolean = false,
@@ -177,7 +178,7 @@ data class ReleaseCandidate(
     val episodeNumbers: List<Int> = emptyList(),
     val expiresAt: String,
 ) {
-    val selectable: Boolean get() = approved && !rejected
+    val selectable: Boolean get() = (approved && !rejected) || policyOverrideAllowed
 
     fun expiresAtInstant(): Instant? =
         try {
@@ -189,7 +190,8 @@ data class ReleaseCandidate(
     override fun toString(): String =
         "ReleaseCandidate(selectionToken=<redacted>, title=$title, sizeBytes=$sizeBytes, " +
             "seeders=$seeders, quality=$quality, indexer=$indexer, protocol=$protocol, " +
-            "approved=$approved, rejected=$rejected, rejectionReasons=$rejectionReasons, " +
+            "approved=$approved, rejected=$rejected, policyOverrideAllowed=$policyOverrideAllowed, " +
+            "rejectionReasons=$rejectionReasons, " +
             "fullSeason=$fullSeason, seasonNumber=$seasonNumber, " +
             "episodeNumbers=$episodeNumbers, expiresAt=$expiresAt)"
 }
